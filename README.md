@@ -13,7 +13,7 @@ Git blob `01e9dc34bacb73ef0a740cc3bae77d82f0be0d37`.
 - 通过 C 的 `./protocol-client` 调用 A 本地 custody：临时 P-256 key、身份 Delegation、逐请求 Session、独立 DPoP key、客户端断言和重启后 handle 恢复。F 不打开 NativeStore，不持有或导出这些私钥，不调用远程 signer。
 - 每个实际资源请求重新签 `Poppy-Session`，绑定实际 htm/htu，带账户 Token 时才有 ath。发现、描述和 OAuth 请求不携 Session；禁止调用者注入认证 Header；凭据重定向停止。
 - Direct Sign-In：显式用户入口、state、issuer、43 字符 S256 PKCE verifier、已发布 callback 校验、标准账户 Token、可选 RFC 9449 DPoP 和按 AS/资源分离的 nonce。
-- 独立 PAP account store：scope/resource 约束、refresh single-flight/CAS、轮换 Token 原子替换、丢回执标为 uncertain、退出撤销及 revocation_pending。refresh 与退出并发不会恢复登录态。
+- 独立 PAP account store：scope/resource 约束、refresh single-flight/CAS、轮换 Token 原子替换、丢回执标为 uncertain、退出撤销及 revocation_pending。持久 account slot epoch 同时约束登录事务、refresh 和发送前检查；退出取消 pending/exchanging 登录，迟到 Token 只保留撤销信息。并发资源调用会等待同一刷新代次。
 - `invalid_session` 停止，`session_ended` 新 sid 后最多重发一次，Token 错误最多刷新重发一次。网络超时或丢回执不自动重发副作用请求。429 保留有界 Retry-After 摘要。
 
 Device 为后续独立阶段，当前返回 `unsupported_sign_in` 并且不广告。Browser Join、Mediated Sign-In、PS384、Web Bot Auth operator signature、自动账户合并均未实现。PAP 不复用 MCP machineToken、Mcp-Session-Id 或 0.2 Session grant。
@@ -50,7 +50,7 @@ Host 配置需明确指定：绝对 `stateRoot`、`binding={identityRef,ownerRef
 
 `pap-state.enc` 以 AES-256-GCM 加密，AAD 绑定 schema 和 identity/owner/client 命名空间；目录 0700、文件 0600。跨进程锁内使用 fsync + rename 原子提交；公开映射、Delegation、Token、PKCE 和 callback 领取状态均不明文落盘。状态目录备份与 Host secret store 备份应分别保管。Keyring provider 的 locksRoot 须使用独立目录，不能与 PAP stateRoot 使用同一个锁目录。
 
-恢复后重新经 C 获取目标许可并复核 key handle；持久 handle 本身不授予签名权。中断的 refresh 标为 uncertain，换码中断要求重新授权。委托默认一小时且校验最大二十四小时；自动/显式轮换保持 User ID/sid，并保存旧 key 的停用重试引用。外部 Company 可缓存 Delegation 到 exp，本地停止签名不等于立即全网撤销。
+恢复后重新经 C 获取目标许可并复核 key handle；持久 handle 本身不授予签名权。中断的 refresh 标为 uncertain，换码中断要求重新授权。委托默认一小时且校验最大二十四小时；自动/显式轮换保持 User ID/sid，并保存旧 key 的停用重试引用。每次 key 创建先持久预留 attempt；创建回执未知时复用原幂等 operation，已停用的失败 attempt 则不会再用；退休未确认时先完成清理再创建下一把 key。外部 Company 可缓存 Delegation 到 exp，本地停止签名不等于立即全网撤销。
 
 元数据五分钟过期后自动重新发现；发现失败直接停止，不降级无 AS。没有 expires_in 的 Token 保持未知远端寿命，仅施加本地二十四小时使用上限，不猜测 opaque Token 内容。账户 sign-out 停止本地 Token 使用；未确认撤销保留最小加密重试信息。普通 `disconnectPap` 停止该连接，不隐式退出其他共用账户 Session。
 

@@ -22,7 +22,7 @@ let server:https.Server|undefined;
 try {
   const binaryPath=resolve(dirname(fixturePath),'../../../../bindings/node/anp-identity.linux-x64-gnu.node');
   const nativeSha256=createHash('sha256').update(await readFile(binaryPath)).digest('hex');
-  assert.equal(nativeSha256,'f12313ff76e3d99fef949c6ef2eec9f14e880abef101524463205a2de75bee5e');
+  assert.equal(nativeSha256,'e2c4b86a0b3622aaefa70b44d3dc31cdab579b1237a4418d349bd294c52663ef');
   const discovery={profile:'pap_session' as const,issuer:'https://company.test',companyId:'https://company.test',resource:'https://company.test',allowedEndpoints:['https://company.test/api/cart'],metadataDigest:'a'.repeat(64),expiresAt:Date.now()+300000,sources:{resource:'https://company.test/.well-known/poppy.json',authorizationServer:'https://company.test/.well-known/poppy.json'}};
   const initial=await fixture.client.registerValidatedTarget({identityRef:fixture.reference,policyRef:fixture.policyRef,discovery,requestedScopes:[]});const identity=await initial.getOAuthClientIdentity();initial.dispose();
   const binding={identityRef:fixture.reference,ownerRef:'native-component-owner',clientId:identity.clientId};

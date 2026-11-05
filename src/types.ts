@@ -23,13 +23,13 @@ export interface Delegation { subjectRef: string; key: KeyRef; compact: string; 
 export interface Grant {
   ref: string; subjectRef: string; accountSlot: string; issuer: string; clientId: string; resource: string; scope: string[];
   accessToken: string; refreshToken?: string; tokenType: 'Bearer' | 'DPoP'; dpopKey?: KeyRef;
-  expiresAt?: number; usableUntil: number; generation: number;
+  expiresAt?: number; usableUntil: number; generation: number; accountEpoch: number;
   status: 'active' | 'refreshing' | 'uncertain' | 'reauthorization_required' | 'revocation_pending' | 'signed_out';
 }
 export interface AuthTransaction {
   ref: string; subjectRef: string; accountSlot: string; issuer: string; clientId: string;
   redirectUri: string; state: string; verifier: string; resource: string; scope: string[];
-  expiresAt: number; status: 'pending' | 'exchanging' | 'consumed' | 'failed'; dpopKey?: KeyRef;
+  expiresAt: number; accountEpoch: number; exchangeInFlight?: boolean; status: 'pending' | 'exchanging' | 'consumed' | 'failed' | 'cancelled'; dpopKey?: KeyRef;
   callbackRef?: string;
 }
 export interface PapState {
@@ -37,6 +37,8 @@ export interface PapState {
   companies: Record<string, Company>; subjects: Record<string, Subject>; sessions: Record<string, Session>;
   delegations: Record<string, Delegation>; grants: Record<string, Grant>; transactions: Record<string, AuthTransaction>;
   nonces: Record<string, string>;
+  accountSlots: Record<string, { subjectRef: string; epoch: number; signedOut: boolean }>;
+  delegationAttempts: Record<string, { sequence: number; status: 'reserved' | 'issued' | 'failed' }>;
   retirements: Record<string, { subjectRef: string; key: KeyRef }>;
 }
 export interface Operation { url: string; method?: string; headers?: Record<string, string>; body?: string; resource?: string; scopes?: string[]; idempotencyKey?: string }

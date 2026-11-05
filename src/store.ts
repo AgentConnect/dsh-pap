@@ -5,7 +5,7 @@ import lockfile from 'proper-lockfile';
 import type { HostSecretStore } from './host.js';
 import type { PapState } from './types.js';
 import { PapError, requirePap } from './errors.js';
-const empty = (): PapState => ({ schemaVersion: 1, generation: 0, companies: {}, subjects: {}, sessions: {}, delegations: {}, grants: {}, transactions: {}, nonces: {}, retirements: {} });
+const empty = (): PapState => ({ schemaVersion: 1, generation: 0, companies: {}, subjects: {}, sessions: {}, delegations: {}, grants: {}, transactions: {}, nonces: {}, retirements: {}, accountSlots: {}, delegationAttempts: {} });
 
 /** Encrypted, cross-process serialized transactions. The master key stays in Host secret storage. */
 export class PapStore {
@@ -37,6 +37,18 @@ export class PapStore {
         decipher.setAuthTag(bytes.subarray(17, 33));
         state = JSON.parse(Buffer.concat([decipher.update(bytes.subarray(33)), decipher.final()]).toString());
         requirePap(state.schemaVersion === 1 && Number.isSafeInteger(state.generation) && state.companies && state.subjects && state.sessions && state.delegations && state.grants && state.transactions && state.nonces && state.retirements, 'state_corrupt');
+        // Additive migration of the first private candidate; closed slots stay closed.
+        state.accountSlots ??= {}; state.delegationAttempts ??= {};
+        for (const grant of Object.values(state.grants)) {
+          grant.accountEpoch ??= 1;
+          const slot = state.accountSlots[grant.accountSlot] ??= { subjectRef: grant.subjectRef, epoch: grant.accountEpoch, signedOut: false };
+          if (['signed_out','revocation_pending'].includes(grant.status)) slot.signedOut = true;
+        }
+        for (const tx of Object.values(state.transactions)) {
+          tx.accountEpoch ??= 1;
+          const slot = state.accountSlots[tx.accountSlot] ??= { subjectRef: tx.subjectRef, epoch: tx.accountEpoch, signedOut: false };
+          if (slot.signedOut) { tx.status = 'cancelled'; tx.verifier = ''; delete tx.callbackRef; }
+        }
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') state = empty();

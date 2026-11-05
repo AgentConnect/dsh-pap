@@ -1,7 +1,7 @@
 import { createPublicKey, verify } from 'node:crypto';
 import type { PapSigningLease } from './host.js';
 import type { Delegation, KeyRef, PublicJwk, Subject } from './types.js';
-import { requirePap } from './errors.js';
+import { PapError, requirePap } from './errors.js';
 import { jwtParts, scopeFor, sha256 } from './util.js';
 export function thumbprint(jwk: PublicJwk): string { return sha256(JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y })); }
 export function verifyCompact(jwt: string, jwk: PublicJwk): boolean {
@@ -22,16 +22,22 @@ export function checkDelegation(jwt: string, key: KeyRef, clientId: string, iden
   requirePap(iat <= Math.floor(now / 1000) + 5 && exp * 1000 > now && exp > iat && exp - iat <= 86400, 'delegation_blocked');
   return exp * 1000;
 }
-export async function newDelegation(subject: Subject, lease: PapSigningLease, generation: number, now: number): Promise<Delegation> {
+export class DelegationAttemptFailure extends Error {
+  constructor(readonly code: import('./errors.js').PapErrorCode, readonly key: KeyRef, readonly retired: boolean) { super('Delegation attempt failed'); }
+}
+export async function newDelegation(subject: Subject, lease: PapSigningLease, generation: number, now: number, operationId: string): Promise<Delegation> {
   const scope = scopeFor(subject);
   const identity = await lease.getOAuthClientIdentity();
   requirePap(identity.clientId === subject.binding.clientId, 'permission_denied');
-  const key = await lease.createDelegatedKey(scope, `pap-delegation/${subject.ref}/${generation}`);
-  requirePap(key.purpose === 'pap_session', 'delegation_blocked');
+  const key = await lease.createDelegatedKey(scope, operationId);
   try {
+    requirePap(key.purpose === 'pap_session', 'delegation_blocked');
     const compact = await lease.issuePapDelegation(key, scope, 3600);
     const expiresAt = checkDelegation(compact, key, subject.binding.clientId, identity, now);
     await lease.assertActive();
     return { subjectRef: subject.ref, key, compact, expiresAt, generation };
-  } catch (error) { await lease.retireTemporaryKey(key, scope).catch(() => {}); throw error; }
+  } catch (error) {
+    let retired = false; try { await lease.retireTemporaryKey(key, scope); retired = true; } catch {}
+    throw new DelegationAttemptFailure(error instanceof PapError ? error.code : 'delegation_blocked', key, retired);
+  }
 }
