@@ -5,7 +5,7 @@ import type { PapHostOptions, PapSigningLease } from './host.js';
 import { PapStore } from './store.js';
 import { DelegationAttemptFailure, newDelegation, thumbprint, verifyCompact } from './delegation.js';
 import type { AuthTransaction, Company, Delegation, Grant, HttpResponse, HttpTransport, KeyRef, Operation, PapState, Session, Subject } from './types.js';
-import { httpsUrl, htu, id, jwtParts, matchedRoute, parseJson, retryAfter, scopeFor, sha256 } from './util.js';
+import { httpsUrl, htu, id, isPapLoopbackRedirect, jwtParts, matchedRoute, parseJson, retryAfter, scopeFor, sha256 } from './util.js';
 
 function secureEqual(a: unknown, b: string): boolean {
   return typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -275,12 +275,12 @@ export class PapClient {
     const scope = [...new Set(input.scopes)].sort();
     requirePap(scope.length > 0 && scope.every(x => company.scopes.includes(x) && /^[\x21\x23-\x5b\x5d-\x7e]+$/.test(x)) && company.routes.some(x => x.resource === input.resource), 'insufficient_scope');
     const lease = await this.lease(subject, 'pap_account', input.resource, undefined, scope); const identity = await lease.getOAuthClientIdentity();
-    const redirect = new URL(input.redirectUri); const client = httpsUrl(subject.binding.clientId);
-    const loopback = redirect.protocol === 'http:' && ['127.0.0.1','[::1]'].includes(redirect.hostname) && !redirect.username && !redirect.password && !redirect.hash;
+    const client = httpsUrl(subject.binding.clientId);
+    const loopback = isPapLoopbackRedirect(input.redirectUri);
     requirePap(input.callbackMode === 'handoff' ? httpsUrl(input.redirectUri).hostname === client.hostname && this.options.callbackHandoff : loopback, 'unsupported_sign_in');
     requirePap(identity.redirectUris?.some(value => {
       if (value === input.redirectUri) return true;
-      if (!loopback) return false;
+      if (!loopback || !isPapLoopbackRedirect(value)) return false;
       const configured = new URL(value); configured.port = ''; const actual = new URL(input.redirectUri); actual.port = ''; return configured.href === actual.href;
     }), 'unsupported_sign_in');
     const tx: AuthTransaction = { ref: id('auth'), subjectRef, accountSlot: id('acct'), issuer: company.issuer, clientId: subject.binding.clientId, redirectUri: input.redirectUri, state: id('state'), verifier: randomBytes(32).toString('base64url'), resource: input.resource, scope, expiresAt: this.clock() + 600000, accountEpoch: 1, status: 'pending' };

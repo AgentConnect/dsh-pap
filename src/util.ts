@@ -50,3 +50,11 @@ export function retryAfter(response: HttpResponse): number | undefined {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric >= 0 ? Math.min(numeric, 300) : undefined;
 }
+
+/** Explicit PAP account callback lane; this exception never applies to public or resource URLs. */
+export function isPapLoopbackRedirect(value: string): boolean {
+  if (typeof value !== 'string' || value.length > 2048 || /[^\x21-\x7e]|\\/.test(value) || /%(?![0-9a-fA-F]{2})/.test(value)) return false;
+  const match = value.match(/^http:\/\/(?:127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})(\/[^?#]*)$/);
+  if (!match || Number(match[1]) > 65535) return false;
+  return match[2]!.split('/').every(segment => !['.','..'].includes(segment.replace(/%2e/gi, '.')));
+}

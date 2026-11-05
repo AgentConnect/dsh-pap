@@ -10,6 +10,6 @@ export type { Binding, Company, Operation, HttpTransport, HttpResponse } from '.
 export type { HostSecretStore, CallbackHandoff, PapIdentityHost, PapSigningLease, PapHostOptions } from './host.js';
 
 export { DeviceCallbackHandoff } from './callback-handoff.js';
-export type { DeviceManagementOperations } from './callback-handoff.js';
+export type { DeviceManagementOperations, CallbackManagementOperation, CallbackRegistration, CallbackClaim, CallbackRegistrationResult, CallbackClaimResult, RegisterCallbackOperation, ClaimCallbackOperation } from './callback-handoff.js';
 export { name, inject, apply, PapService, PapUserManagement } from './plugin.js';
 export { KeyringSecretStore } from './keyring.js';

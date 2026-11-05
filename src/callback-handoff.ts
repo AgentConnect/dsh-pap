@@ -2,10 +2,20 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { CallbackHandoff } from './host.js';
 import { PapError, requirePap } from './errors.js';
 
+export interface CallbackRegistration {
+  transaction_id: string; client_id: string; issuer: string; redirect_uri: string;
+  state_sha256: string; claim_sha256: string; expires_at: string;
+}
+export interface CallbackClaim { transaction_id: string; claim_secret: string }
+export interface CallbackRegistrationResult { transaction_id: string; callback_uri: string; expires_at: string }
+export type CallbackClaimResult = { state: string; iss: string; code: string; error?: never } | { state: string; iss: string; error: string; code?: never };
+export interface RegisterCallbackOperation { action: 'pap-callback-register'; operationId: string; callback: CallbackRegistration }
+export interface ClaimCallbackOperation { action: 'pap-callback-claim'; operationId: string; callback: CallbackClaim }
+export type CallbackManagementOperation = RegisterCallbackOperation | ClaimCallbackOperation;
 export interface DeviceManagementOperations {
-  /** Implemented by the authenticated local identity management driver. It adds the current
-   * checkpoint/device proof and sends only the fixed B device-management route. */
-  execute(input: { action: 'pap-callback-register' | 'pap-callback-claim'; operationId: string; callback: Record<string,string> }): Promise<Record<string,unknown>>;
+  /** The authenticated C Host driver supplies checkpoint/device proof and only the two fixed B routes. */
+  execute(input: RegisterCallbackOperation): Promise<CallbackRegistrationResult>;
+  execute(input: ClaimCallbackOperation): Promise<CallbackClaimResult>;
 }
 const hex = (value: string) => createHash('sha256').update(value,'utf8').digest('hex');
 /** Fixed B callback relay, with an independent pickup secret. callbackRef is encrypted by PapStore. */

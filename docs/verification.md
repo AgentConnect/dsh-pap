@@ -20,7 +20,7 @@
 | 用户与模型 | 管理状态不含Token/JWT/key；授权链接仅用户UI；没有模型tool/Remote通用签名入口 |
 | MCP 隔离 | 独立 PAP schema 与 OAuth account grants；没有machineToken导入、client_credentials或协议回退 |
 
-当前剩余发行/启用门槛：实际账户路径组合 C/A 原生 custody 的同链路验收；B exact-device callback driver 的真实注册/一次领取联调；实际 Host Secret Service 可用性与恢复；产品管理 UI、产品 E2E 和受影响 System Test；发布后的 registry SDK pin/lock 验证。Device 为另阶段，当前不广告。测试 custody 的成功不能抵消这些未验证范围。
+当前剩余发行/启用门槛：实际 Host Secret Service 正向可用性与恢复；默认 HTTPS relay 与真实账户的同一链路组合；产品管理 UI、产品 E2E 和受影响 System Test；发布后的 registry SDK pin/lock 验证。真实 C/A native 账户组合和 F/C/B exact-device callback 模块链已补证，边界见末节。Device 为另阶段，当前不广告。测试 custody 的成功不能抵消这些未验证范围。
 
 ## 执行记录
 
@@ -49,4 +49,17 @@ Delegation 创建改为先持久预留 attempt，再执行幂等创建/签发。
 - G 原复现脚本 `node --import tsx <G .local/review/f-races.mjs>`：P1 返回 revocation_pending，迟到换码后 activeGrants=0；P2 第二请求成功且只进行同一轮刷新；P3 `[delegation_blocked, ok, ok]`，创建两把 key、只剩一把 active。G 独立只读复测也确认三项关闭。
 - 真实 C/A 组件 fresh Node 进程再次通过，native pin 更新为 e2c4 候选，三请求、轮换与重启恢复均通过。A 的该次改动为 publication candidate 的冻结 baseEvidence，PAP 签名契约未改；f123 是被其替换的历史候选，不是最终包或 registry 依赖。
 
-原来列出的 B callback、系统 keyring、native 账户组合、产品 E2E/System Test 和 registry 发行门槛仍未执行；本次并发修复不改变其状态。
+截至该次并发修复提交，B callback、系统 keyring、native 账户组合、产品 E2E/System Test 和 registry 门槛仍未执行；后续模块补证见下节。
+
+## 真实 callback 与 native 账户组合补证
+
+本轮不再以 mapper mock 或 FixtureHost 代替这两条链。F 的 callback Host seam 已缩为闭合 register/claim DTO 与两个 execute overload，实际兼容 C 的受限 driver。F 同步 B/C 独立 loopback 正负向配置向量，公开材料/资源 URL 的 HTTPS 限制没有放宽。
+
+1. `npx tsx scripts/callback-component.ts <C test/helpers/managed-callback-fixture.ts> <B source> <Python>` 通过。真实 C 批准 E1 创建、A native 设备签名、B factor 注册/owner/ready-admin Registry 与实际 PAP account 发布后，经 `DeviceCallbackHandoff` 完成 register、公共 callback 和原设备一次领取；未 ready、state 伪装领取秘密、issuer 不匹配、重复领取均拒绝；access_denied 的 state/iss 保留。该检查只替代邮件投递和隔离 master，B 为生产 ASGI handlers + 临时真实 MySQL；逻辑 fixed HTTPS relay，不是远程 TLS 部署。未冒称 Web native 管理全链。
+2. `scripts/native-frontvia-component.ts` 与 G `pap03_0c7c24406ada` 窗口通过。所有 Agent identity/delegated/DPoP key 由 A 本地 custody 经真实 C Context 使用，F 与 G 不读取/接收 Agent private key。C 的公材料以原始字节挂接 G，实际 HTTPS GET 与 C 确认字符串逐字节相等；metadata SHA-256 `5fe653513cc2180e5ad1043b10f27819910851ba936c8c92990cebd7f4a40c71`，JWKS `3f66193cf6011226c349179644338792a2e0b23d16f8b00ad4f21f345945e7a0`，G 独立计数两份材料各 GET 11 次并核对相同摘要。
+3. 上述 native 账户链包含真实 127.0.0.1 HTTP listener、Direct/PKCE、state/issuer 负例、标准 Token、DPoP 资源调用、重启后 native key restore、委托轮换不触发账户刷新、显式 refresh、revoke 与退出后 signed-out。Token endpoint 仅两次（code + refresh），revocation 一次。仍明确保留 C publication acceptance fixture 和隔离状态 master；它与第 1 条默认 HTTPS relay 是分别验证的模块链。
+4. `npm run typecheck && npm test`：**36/36 通过**，包含新增 B/C 共同 loopback 正负向向量。A native pin 仍为 `e2c4b86a0b3622aaefa70b44d3dc31cdab579b1237a4418d349bd294c52663ef`；G binary 仍为 `35f6265876ef98daa69e8780f055ed2e6f164468494f1241b711dd2e7be09444`。
+
+首个 native 账户编排在进入任何网络前因 stdin/TTY 与 readline close 顺序失败，已修复后重新生成 native fixture/public materials 并执行成功窗口；失败不计作通过。两次 G 窗口均已核对 DB/role=0、进程停止，独占 PG 27432 停止；F listener、C native 临时状态、PAP 状态 master、公材料文件和 callback 管理 fixture 已精确清理。没有 Token、code、JWT、claim secret 或私钥进入日志/结果。
+
+A owner 另对当前 host 做真实缺后端 keyring 检查：缺少 secret-tool/gnome-keyring-daemon，独立无 activation DBus/private XDG 中 F KeyringSecretStore get/create/PapStore.transaction 均 credential_unavailable、无文件 fallback。此项只能记为 real_missing_backend_only；Secret Service 正向 create/restart/locked/missing-item 未执行。

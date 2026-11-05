@@ -42,7 +42,9 @@ Host 配置需明确指定：绝对 `stateRoot`、`binding={identityRef,ownerRef
 
 默认生产网络使用 `SafeHttpsTransport`。`privateOrigins`、`portOverrides` 和自定义 DNS 仅供明确配置的隔离部署/组件测试；TLS 验证始终启用。映射仅改变 TCP 端口，Host 与 Session htu 保持逻辑 HTTPS URL。
 
-`papHost.callbackHandoff` 可以使用 `DeviceCallbackHandoff`。其管理 driver 必须通过 B 的 exact-device API 添加当前 checkpoint 和受限 device proof，固定调用 `/user-service/v1/agent-clients/device/pap-callback-register` 或 `pap-callback-claim`。F 只提交 state/claim 的独立 SHA-256 hex 摘要，领取时提交独立 claim secret；verifier、PAP User/Agent ID、sid 和第三方 Token 均不交给 callback 服务。`callbackRef` 含领取秘密，只进入加密 Store。B 固定 callback URI 为 `/user-service/v1/pap-callback`，须先出现在实际已发布 CIMD。重定向地址不随交易变化。
+`papHost.callbackHandoff` 可以使用 `DeviceCallbackHandoff`。其管理 driver 必须通过 B 的 exact-device API 添加当前 checkpoint 和受限 device proof，固定调用 `/user-service/v1/agent-clients/device/pap-callback-register` 或 `pap-callback-claim`。F 只提交 state/claim 的独立 SHA-256 hex 摘要，领取时提交独立 claim secret；verifier、PAP User/Agent ID、sid 和第三方 Token 均不交给 callback 服务。`callbackRef` 含领取秘密，只进入加密 Store。B 固定 callback URI 为 `/user-service/v1/pap-callback`，须先出现在实际已发布 CIMD。重定向地址不随交易变化。C 的 `configureManagedPublicationBackend(...)` 现在返回受限 `callbackManagement`，可直接传给 `new DeviceCallbackHandoff(configured.callbackManagement)`；其 `execute` 只有 register/claim 两个闭合 DTO overload，由 C 逐次核验真实 manager Context/device/identity，F 不提交 method、purpose 或 route。
+
+独立 loopback lane 必须显式配置并发布：仅 PAP account 的 `http://127.0.0.1:<port>/<path>` 或 `http://[::1]:<port>/<path>`，端口为显式 1–65535 十进制且无前导零；禁止 localhost、其他 127 地址、userinfo、query、fragment 和路径 dot segment。Host 持有实际本机 listener，运行时仅按 RFC 8252 忽略已发布 loopback URI 的端口差异。它不能进入 B 的 HTTPS relay register，不是 relay 失败后的回退；公开 CIMD/JWKS/发现/业务 URL 仍只接受 HTTPS。共同正负向向量位于 `tests/vectors/pap-account-redirects.json`。
 
 `PapUserManagement` 是 Host 用户管理适配器，调用方必须检查真实用户会话。其授权 URL 只交给用户 UI。不要将 `engine`、`store`、signer lease、callbackRef 或管理方法注册成可由模型任意调用的 Remote。此包尚未包含产品 Web 界面或其 E2E。
 
@@ -77,3 +79,23 @@ npx tsx scripts/frontvia-component.ts /absolute/path/to/handoff.json --account
 此 driver 验证 F→G 的真实 Rust Session/对象/账户路径，显式读取 G 的合成 fixture identity key；不用于运行时，不打包进产品，不把该 custody 计为 A/C 原生验收。`--account` 仅在 G 明确开启测试 OTP/consent 模式时运行，受其 OTP 冷却限制。
 
 详细边界和本轮实际证据见 [安全与验收记录](docs/verification.md)。
+
+## 新增真实模块链入口
+
+默认 fixed HTTPS relay 的 F/C/B 链：
+
+```bash
+npm run test:callback-component -- /absolute/C/test/helpers/managed-callback-fixture.ts /absolute/user-service /absolute/venv/bin/python
+```
+
+该入口使用 C 的真实批准创建/A native 设备 proof、B 实际 factor 注册/Registry/SQL/PAP 发布和生产 ASGI callback handlers，验证 F handoff 登记、公共 callback、原设备一次领取及拒绝路径。B 使用隔离临时 MySQL，邮件投递是 capture；URL 是逻辑 HTTPS 的 ASGI 模块调用，不计远程 TLS 部署。
+
+C/A 本地 custody 与 G 实际账户组合链：
+
+```bash
+npm run test:native-account-component -- /absolute/C/test/helpers/native-protocol-fixture.ts /absolute/public-materials.json https://agent.test:29443
+```
+
+进程打印 `public_materials_ready` 后保持存活；将文件交给 G 的 `--materials-file` public-only fixture，用同一端口开启 fresh OTP 窗口，再在该进程 stdin 输入 G handoff.json 的绝对路径。输入通道应保持打开。它只导出 C 确认的原始 CIMD/JWKS 字节，G 不接收 Agent private key；F 不读 `identity_key`，不使用 FixtureHost，所有 Agent identity/delegated/DPoP 签名均通过真实 C/A。实际 loopback listener 接收 callback，并验证 Direct、DPoP 重启恢复、委托轮换、refresh、revoke 与 signed-out。完成后双方精确清理。
+
+两条链分别出具证据：账户链仍允许明确的 C publication acceptance fixture 和隔离 master；默认 HTTPS relay 的完整同一账户链组合、系统 keyring 正向、产品 UI/E2E、System Test 和 registry 发行验证没有因此自动通过。

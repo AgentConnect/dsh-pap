@@ -32,7 +32,7 @@ export class FixtureHost implements PapIdentityHost {
     };
     const get = (ref: KeyRef, scope: KeyScope) => { check(); const value = this.keys.get(ref.handle); requirePap(value && value.scope === JSON.stringify(scope) && value.descriptor.generation === ref.generation, 'credential_unavailable'); return value.key; };
     return {
-      getOAuthClientIdentity: async () => ({ clientId: this.clientBinding.clientId, alg: 'ES256', kid: this.identityKid, publicJwk: this.identity.jwk, redirectUris: ['https://agent.example/pap-callback','http://127.0.0.1/callback'] }),
+      getOAuthClientIdentity: async () => ({ clientId: this.clientBinding.clientId, alg: 'ES256', kid: this.identityKid, publicJwk: this.identity.jwk, redirectUris: ['https://agent.example/pap-callback','http://127.0.0.1:57293/callback'] }),
       assertActive: async () => check(),
       createDelegatedKey: (scope, operationId) => create(scope, operationId, 'pap_session'),
       createDpopKey: (scope, operationId) => create(scope, operationId, 'pap_dpop'),

@@ -24,7 +24,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "npm run build && tsx --test tests/*.test.ts",
     "test:native-component": "tsx scripts/native-component.ts",
-    "test:frontvia-component": "tsx scripts/frontvia-component.ts"
+    "test:frontvia-component": "tsx scripts/frontvia-component.ts",
+    "test:callback-component": "tsx scripts/callback-component.ts",
+    "test:native-account-component": "tsx scripts/native-frontvia-component.ts"
   },
   "dependencies": {
     "proper-lockfile": "4.1.2"
