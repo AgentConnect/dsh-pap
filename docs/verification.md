@@ -141,3 +141,11 @@ Secret Store 复用真实 KeyringSecretStore；namespace 额外隔离 PAP purpos
 依赖诊断纠正：起初误读 `lib/index.d.ts` 路径（实际为 `lib/types/index.d.ts`）并被 rg 默认忽略 lib 的结果误导，曾误报 registry Loader 缺入口。Root 与 owner 重新核对正式包 lib/index.js 存在、SRI一致；测试已完全改为正式包入口，删除源码编译辅助与所有 NoCheck 绕行。lock 虽来自 mirror，SRI `sha512-YNcHiH7TRFrgnRbQU7qdS1spABUFFHg04QpB9DdboPEjgKLTFfeEAvr6Y7qll3/nGgqywDQdk1tYshqKO0p1WQ==` 与 primary 制品逐字节相符。安装 dsh-tools dev 依赖曾因 ^rc2 解析到 rc3 的 peer 冲突停止，没有 force；运行时 peer仍固定rc2，实际 registry检查复用 Desktop 安装产物，不修改其依赖。
 
 此候选补齐 F 管理/工具 Host 源码，不代表 Desktop 默认 bundle/vendor/settings 已接入。Desktop/C/D 由对应 owner 修改；实际 Company 业务目标尚未决定时保留配置，不新造默认 Company。C factory 全链、真实产品 UI/启用流程、宿主 keyring 配置、System/E2E 和发行门槛分别保留其待验范围。
+
+### 产品入口安全复核 follow-up
+
+A/H 只读 source review 在 7bd 候选发现实际生命周期缺口：仅定义 stop 不会触发 Cordis disposer。现 constructor 显式注册 ctx.effect cleanup，stop 幂等关闭 engine/abort resource HTTP/dispose C facade；工具响应后与 post-Store 公开结果前再次检查 installed tool Context、真实 C active capability 和原始 engine/selection。显式重选同一 identity 也会产生新 engine，旧结果不得借用新 active facade 返回。select 在 persistSelection 的 fsync/rename await 后再次检查 C active/stopped，不能在卸载之后发布新 client。
+
+同批关闭 opaque credential 回显空洞：不只按字段/JWT pattern 遮盖，还在实际 HTTP send 前持锁同步 capture 本次真正发送的 Session/DPoP/Authorization/access/refresh 值，仅供同进程 redaction set，不是 wire DTO/日志。合并调用前后私有值集，任意 JSON key/value/message 包含该值都遮盖，包含自动 refresh 的中间新 Token，不能假设响应后 Store 还留着它。输入 URI 经编码后的8KiB上限在签名前检查。C disposed generation 只在真实用户 identity/select 或插件重载时重获，工具/status 保持 fail-closed，不复活旧 target。
+
+当前 `npm run typecheck && npx tsx --test tests/product.test.ts`：18/18。新增直接断言包括实际 Loader unload 的 transport abort（honor/ignore两模式）、迟到结果不返、selection 持久化挂起时卸载后 next.close、自动 refresh→实际资源响应→dispatch返回挂起→用户 sign-out 清空新 Token→恢复后的未知 key/value/message 回显仍脱敏，以及同 identity/operation approval 不变时重选仍拒旧 engine 结果。C/protocol/callback 仍是明确单位替身；这些用例不冒充新 C factory/native 或产品 E2E。

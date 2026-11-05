@@ -10,7 +10,7 @@ import { PapError, requirePap, type PapAuthHint } from './errors.js';
 import { KeyringSecretStore } from './keyring.js';
 import { DeviceCallbackHandoff } from './callback-handoff.js';
 import { PAP_CONSUMER, PAP_MANAGER, PAP_TOOLS, identityReferenceSchema, managementRequestSchema, operationRequestSchema, type PapHostConsumer, type PapManagementRequest, type ProductResult } from './product-api.js';
-import { assertApproval, findOperation, prepareOperation, publicOperations, publicResponse } from './product-operations.js';
+import { assertApproval, findOperation, prepareOperation, privateValues, publicOperations, publicResponse } from './product-operations.js';
 import { httpsUrl, id, sha256 } from './util.js';
 import { strictJson } from './strict-json.js';
 
@@ -59,6 +59,7 @@ export class PapService extends Service {
     // Cordis service access can associate this.ctx with a caller. C must always
     // receive the original installed F Context, never the manager/tool caller.
     this.installedContext = ctx;
+    ctx.effect(() => () => this.stop());
     this.ready = Promise.resolve().then(() => this.restore());
   }
   private assertInstalled(context: Context, expected: string): void {
@@ -68,6 +69,7 @@ export class PapService extends Service {
     requirePap(entry && !entry.disabled && entry.options.name === expected && entry.fiber && [1,2].includes(entry.fiber.state), 'permission_denied');
   }
   private async consumer(): Promise<PapHostConsumer> {
+    requirePap(!this.stopped, 'disconnected');
     requirePap(this.config.enabled === true && typeof this.config.stateRoot === 'string' && isAbsolute(this.config.stateRoot) && Boolean(this.config.policyRef), 'not_configured');
     if (!this.hostConsumer) {
       const identity = this.installedContext.get('anpIdentity') as { bindPapHostConsumer?: (context: Context) => PapHostConsumer } | undefined;
@@ -100,6 +102,9 @@ export class PapService extends Service {
     requirePap(!this.changing && !this.stopped, 'state_conflict'); this.changing = true;
     let next: PapClient | undefined;
     try {
+      // A disposed C facade never revives. Only an explicit user selection (or
+      // plugin reload) reacquires current authority from the installed Context.
+      if (persist) { this.hostConsumer?.dispose(); this.hostConsumer = undefined; }
       const consumer = await this.consumer();
       const resolved = await consumer.resolveBinding(reference, this.config.policyRef!, 'pap_session');
       const identityRef = resolved.binding.identityRef;
@@ -133,6 +138,7 @@ export class PapService extends Service {
       next = new PapClient({ stateRoot: join(this.config.stateRoot!, `identity-${sha256(JSON.stringify(binding))}`), binding, identityHost: protocolHost, secretStore: secrets, callbackHandoff: handoff }, host?.transport ?? new SafeHttpsTransport());
       await next.recover(); await consumer.assertActive(); requirePap(!this.stopped, 'disconnected');
       if (persist) await this.persistSelection(reference);
+      await consumer.assertActive(); requirePap(!this.stopped, 'disconnected');
       this.client?.close(); this.authHints.clear(); this.client = next; this.binding = binding; this.selected = structuredClone(reference); this.lastError = undefined;
     } catch (error) { next?.close(); this.lastError = error instanceof PapError ? error.code : 'permission_denied'; throw error; }
     finally { this.changing = false; }
@@ -141,9 +147,10 @@ export class PapService extends Service {
     await this.ready; requirePap(!this.stopped, 'disconnected'); requirePap(this.client, 'not_configured'); await (await this.consumer()).assertActive(); return this.client;
   }
   async start(): Promise<void> { await this.ready; }
-  stop(): void { this.stopped = true; this.client?.close(); this.hostConsumer?.dispose(); }
+  stop(): void { if (this.stopped) return; this.stopped = true; this.client?.close(); this.hostConsumer?.dispose(); }
   async getStatus(includeManagementHints = false): Promise<object> {
     await this.ready;
+    requirePap(!this.stopped, 'disconnected');
     if (this.config.enabled !== true) return { state: 'disabled' };
     if (!this.client) return { state: this.lastError === 'credential_unavailable' ? 'credential_unavailable' : 'unconfigured', ...(this.lastError ? { error: this.lastError } : {}) };
     await (await this.consumer()).assertActive();
@@ -172,12 +179,22 @@ export class PapService extends Service {
       operations: () => publicResult(async () => { check(); return publicOperations(await (await this.engine()).store.read(), true); }),
       request: (input, signal) => publicResult(async () => {
         check(); const parsed = operationRequestSchema.safeParse(input); requirePap(parsed.success, 'permission_denied');
-        const engine = await this.engine(); const prepared = prepareOperation(await engine.store.read(), parsed.data);
+        const engine = await this.engine(); const snapshot = await engine.store.read(); const prepared = prepareOperation(snapshot, parsed.data);
+        const checkRequest = () => { check(); requirePap(!this.changing && this.client === engine, 'state_conflict'); };
+        checkRequest();
+        const sentSecrets = new Set(privateValues(snapshot));
         try {
-          const response = await engine.dispatchPap(prepared.approval.sessionRef, prepared.operation, { signal, assertAllowed: state => { check(); assertApproval(state, parsed.data.operationRef, prepared.approval); } });
-          this.authHints.delete(parsed.data.operationRef); return publicResponse(response);
+          const response = await engine.dispatchPap(prepared.approval.sessionRef, prepared.operation, { signal,
+            assertAllowed: state => { checkRequest(); assertApproval(state, parsed.data.operationRef, prepared.approval); },
+            captureSecrets: values => { for (const value of values) sentSecrets.add(value); },
+          });
+          checkRequest(); await (await this.consumer()).assertActive(); checkRequest();
+          const current = await engine.store.read(); assertApproval(current, parsed.data.operationRef, prepared.approval);
+          const secrets = [...sentSecrets, ...privateValues(current)];
+          checkRequest(); await (await this.consumer()).assertActive(); checkRequest();
+          this.authHints.delete(parsed.data.operationRef); return publicResponse(response, secrets);
         } catch (error) {
-          if (error instanceof PapError && error.authHint) {
+          if (this.client === engine && !this.changing && error instanceof PapError && error.authHint) {
             if (this.authHints.size >= 32) this.authHints.delete(this.authHints.keys().next().value!);
             this.authHints.set(parsed.data.operationRef, error.authHint);
           }

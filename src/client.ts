@@ -17,7 +17,12 @@ const protectedHeaders = new Set(['authorization','dpop','poppy-session','host',
 interface WaitContext { subjectRef: string; sessionRef?: string; accountSlot?: string; accountEpoch?: number; allowSignedOut?: boolean; grantRef?: string; grantGeneration?: number; transactionRef?: string }
 interface AccountRequestControl { purpose?: 'token'|'revoke'; scopes: readonly string[]; accountEpoch?: number; sessionRef?: string; grantRef?: string; grantGeneration?: number; transactionRef?: string }
 /** Same-process permission fence, never a wire input. */
-export interface PapDispatchControl { signal?: AbortSignal; assertAllowed?: (state: PapState) => void }
+export interface PapDispatchControl {
+  signal?: AbortSignal;
+  assertAllowed?: (state: PapState) => void;
+  /** Host-only in-memory response redaction set; never register this callback on a wire surface. */
+  captureSecrets?: (values: readonly string[]) => void;
+}
 function authenticationError(code: string | undefined, hint?: PapAuthHint): PapError {
   if (code === 'insufficient_scope' || code === 'invalid_scope' || code === 'invalid_target' || code === 'invalid_client' || code === 'invalid_token' || code === 'invalid_dpop_proof' || code === 'unauthorized_client') return new PapError(code, undefined, hint);
   if (code === 'invalid_grant') return new PapError('reauthorization_required', undefined, hint);
@@ -276,6 +281,7 @@ export class PapClient {
           const currentSession = this.session(current, sessionRef);
           requirePap(this.company(current, subject.companyRef).generation === company.generation && currentSession.generation === session.generation && current.delegations[subject.ref]?.generation === delegation.generation, 'state_conflict');
           if (grant) { this.assertAccountEpoch(current, subject, grant.accountSlot, grant.accountEpoch); requirePap(current.grants[grant.ref]?.generation === grant.generation && current.grants[grant.ref]?.status === 'active', 'state_conflict'); }
+          control.captureSecrets?.([sessionJwt, sentHeaders.dpop, sentHeaders.authorization, grant?.accessToken, grant?.refreshToken, subject.userId, subject.agentId, session.sid].filter((value): value is string => Boolean(value)));
           const response = await this.transport.request(url, { method, headers: sentHeaders, body: frozen.body, signal: controller.signal });
           if (response.status === 429) recordCooldown(current, cooldownKey, response, this.clock());
           return response;

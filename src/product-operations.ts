@@ -56,24 +56,38 @@ export function prepareOperation(state: PapState, input: PapOperationRequest): {
   const allowedQuery = (route.parameters ?? []).filter(x => x.in === 'query');
   requirePap(Object.keys(query).every(key => allowedQuery.some(x => x.name === key)) && allowedQuery.filter(x => x.required).every(x => query[x.name] !== undefined), 'unsafe_destination');
   for (const [key, value] of Object.entries(query)) { requirePap(!/[\x00-\x1f\x7f]/.test(value), 'unsafe_destination'); url.searchParams.set(key, value); }
+  requirePap(url.href.length <= 8192, 'unsafe_destination');
   const body = input.body === undefined ? undefined : JSON.stringify(input.body);
   requirePap(body === undefined || ['POST','PUT','PATCH','DELETE'].includes(route.method) && Buffer.byteLength(body) <= 65536, 'permission_denied');
   return { approval: structuredClone(approval), operation: { url: url.href, method: route.method, resource: route.resource, scopes: [...approval.scopes],
     ...(body === undefined ? {} : { body, headers: { 'content-type': 'application/json' } }) } };
 }
 
-const privateFields = /^(?:access[_-]?token|refresh[_-]?token|id[_-]?token|authorization|proxy[_-]?authorization|dpop|poppy[_-]?session|private[_-]?key|client[_-]?secret|client[_-]?assertion|code[_-]?verifier|claim[_-]?secret|callbackRef)$/i;
+const privateFields = /^(?:token|access[_-]?token|refresh[_-]?token|id[_-]?token|authorization|proxy[_-]?authorization|dpop|poppy[_-]?session|private[_-]?key|client[_-]?secret|client[_-]?assertion|code[_-]?verifier|claim[_-]?secret|callbackRef)$/i;
+export function privateValues(state: PapState): string[] {
+  const values: (string | undefined)[] = [];
+  for (const grant of Object.values(state.grants)) values.push(grant.accessToken, grant.refreshToken, grant.dpopKey?.handle);
+  for (const subject of Object.values(state.subjects)) values.push(subject.userId, subject.agentId);
+  for (const session of Object.values(state.sessions)) values.push(session.sid);
+  for (const delegation of Object.values(state.delegations)) values.push(delegation.compact, delegation.key.handle);
+  for (const tx of Object.values(state.transactions)) {
+    values.push(tx.state, tx.verifier, tx.callbackRef, tx.dpopKey?.handle);
+    if (tx.callbackRef) try { const claim = JSON.parse(tx.callbackRef); if (typeof claim.claimSecret === 'string') values.push(claim.claimSecret); } catch { /* No cleartext fallback for an unknown callback reference. */ }
+  }
+  return [...new Set(values.filter((value): value is string => typeof value === 'string' && value.length > 0))];
+}
 /** Only business JSON crosses the tool boundary. Protocol headers and credential-shaped fields do not. */
-function redact(value: unknown, depth = 0): unknown {
+function redact(value: unknown, secrets: readonly string[], depth = 0): unknown {
   requirePap(depth <= 32, 'unsupported_profile');
-  if (typeof value === 'string' && /(?:^|\s)(?:Bearer|DPoP)\s+\S+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(value)) return '[redacted]';
-  if (Array.isArray(value)) return value.map(item => redact(item, depth + 1));
-  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, privateFields.test(key) ? '[redacted]' : redact(item, depth + 1)]));
+  const sensitive = (text: string) => secrets.some(secret => text.includes(secret)) || /(?:^|\s)(?:Bearer|DPoP)\s+\S+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(text);
+  if (typeof value === 'string' && sensitive(value)) return '[redacted]';
+  if (Array.isArray(value)) return value.map(item => redact(item, secrets, depth + 1));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [sensitive(key) ? '[redacted]' : key, privateFields.test(key) ? '[redacted]' : redact(item, secrets, depth + 1)]));
   return value;
 }
-export function publicResponse(response: HttpResponse): object {
+export function publicResponse(response: HttpResponse, secrets: readonly string[] = []): object {
   const type = response.headers['content-type']?.split(';')[0]?.trim().toLowerCase();
   if (type !== 'application/json' && type !== 'application/problem+json') return { status: response.status, bodyAvailable: false };
-  try { return { status: response.status, body: redact(strictJson(response.body, 65536)) }; }
+  try { return { status: response.status, body: redact(strictJson(response.body, 65536), secrets) }; }
   catch { return { status: response.status, bodyAvailable: false }; }
 }

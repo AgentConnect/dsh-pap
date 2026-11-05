@@ -15,6 +15,7 @@ import { PapError, requirePap } from '../src/errors.js';
 import { binding, FixtureHost, FixtureTransport, jsonResponse, secrets } from './fixture.js';
 import { publicResponse } from '../src/product-operations.js';
 import { publicResult } from '../src/plugin.js';
+import { PapClient } from '../src/client.js';
 
 type Value = Record<string, any>;
 function value(result: ProductResult): Value { assert.equal(result.ok, true, result.ok ? undefined : result.error.code); return (result as { value: Value }).value; }
@@ -24,7 +25,7 @@ function error(result: ProductResult, code: string) { assert.deepEqual(result, {
 async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?: FixtureTransport['mode']; missingConfig?: boolean; blockedSecrets?: boolean; missingFactory?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'pap-product-unit-'));
   const ctx = new Context(); const host = new FixtureHost(); const transport = new FixtureTransport(); transport.mode = options.mode ?? 'none';
-  const tools = new Map<string, any>(); const targetRefs = new WeakSet<object>(); const contexts: Context[] = []; const namespaces: string[] = []; let registerCount = 0; let claimCount = 0; let disposedCallbacks = 0; let response: { state: string; iss: string; code: string } | undefined;
+  const tools = new Map<string, any>(); const targetRefs = new WeakSet<object>(); const contexts: Context[] = []; const namespaces: string[] = []; let providerGeneration = 1; let registerCount = 0; let claimCount = 0; let disposedCallbacks = 0; let response: { state: string; iss: string; code: string } | undefined;
   const protocol: ProtocolIdentityClient = {
     registerValidatedTarget: async input => {
       const targetRef = {}; targetRefs.add(targetRef);
@@ -61,7 +62,10 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
     },
   };
   ctx.provide('anpIdentity', {
-    ...(options.missingFactory ? {} : { bindPapHostConsumer(context: Context) { contexts.push(context); return consumer; } }),
+    ...(options.missingFactory ? {} : { bindPapHostConsumer(context: Context) {
+      contexts.push(context); const generation = providerGeneration; let disposed = false;
+      return { ...consumer, assertActive() { if (disposed || generation !== providerGeneration) throw Object.assign(new Error('Disposed fixture facade'), { code: 'provider_disposed' }); consumer.assertActive(); }, dispose() { disposed = true; } };
+    } }),
     bindProtocolConsumer(context: Context) { contexts.push(context); return protocol; },
   });
   const spySecrets = { getEncryptionKey: async (namespace: string) => { namespaces.push(namespace); return secrets.getEncryptionKey(); }, getOrCreateEncryptionKey: async (namespace: string) => { namespaces.push(namespace); return secrets.getOrCreateEncryptionKey(); } };
@@ -78,7 +82,7 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   const execute = async (name: string, args: unknown = {}) => tools.get(name).execute(args, { agent: {}, signal: new AbortController().signal });
   t.after(async () => { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }); });
   return { root, ctx, loader, host, transport, service, manager, execute, tools, contexts, namespaces, config, select: async () => manager.manage({ action: 'identity/select', reference: binding.identityRef }),
-    setResponse(value: typeof response) { response = value; }, get counts() { return { registerCount, claimCount, disposedCallbacks }; } };
+    setResponse(value: typeof response) { response = value; }, advanceProvider() { providerGeneration++; }, get counts() { return { registerCount, claimCount, disposedCallbacks }; } };
 }
 async function connected(f: Awaited<ReturnType<typeof fixture>>) {
   value(await f.select()); const company = value(await f.manager.manage({ action: 'company/discover', domain: 'shop.example' }));
@@ -138,6 +142,9 @@ test('PAP product: user-only Direct handoff binds C target and keeps auth URL/co
   value(await f.execute('pap_request', { operationRef: operation.operationRef })); assert(f.transport.calls.at(-1)!.options?.headers?.authorization?.startsWith('DPoP '));
   const tools = JSON.stringify([await f.execute('pap_status'),await f.execute('pap_operations')]);
   for (const forbidden of [pending.authorizationUrl, 'unit-authorization-code', url.searchParams.get('state')!, 'access-fixture','refresh-fixture','claim_secret','callbackRef','key_']) assert(!tools.includes(forbidden));
+  f.transport.override = target => target.endsWith('/api/cart') ? jsonResponse(target, { unknown: 'prefix access-fixture suffix', nested: ['refresh-fixture'], 'refresh-fixture': 'unknown-key', token: 'unrecognized-token' }) : undefined;
+  const echo = JSON.stringify(await f.execute('pap_request', { operationRef: operation.operationRef }));
+  for (const forbidden of ['access-fixture','refresh-fixture','unrecognized-token']) assert(!echo.includes(forbidden));
   value(await f.manager.manage({ action: 'account/sign-out', accountSlot: pending.accountSlot })); assert.equal(value(await f.manager.status()).accounts[0].status, 'signed_out');
 });
 test('PAP product: stop/disabled tool Context denies cached capability, errors are fixed and credential fields redacted', async t => {
@@ -195,6 +202,68 @@ test('PAP product: declared query names are required and URI is built from the v
   const { operation, session } = await connected(f);
   value(await f.manager.manage({ action: 'operation/enable', operationRef: operation.operationRef, sessionRef: session.sessionRef }));
   error(await f.execute('pap_request', { operationRef: operation.operationRef }), 'unsafe_destination');
+  error(await f.execute('pap_request', { operationRef: operation.operationRef, query: { q: '\u4e00'.repeat(1024) } }), 'unsafe_destination');
   value(await f.execute('pap_request', { operationRef: operation.operationRef, query: { q: 'one & two' } }));
   assert.equal(f.transport.calls.at(-1)!.url, 'https://shop.example/api/cart?q=one+%26+two');
+});
+test('PAP product: a disposed C generation never auto-revives; explicit user selection reacquires', async t => {
+  const f = await fixture(t); const { operation, session } = await connected(f);
+  value(await f.manager.manage({ action: 'operation/enable', operationRef: operation.operationRef, sessionRef: session.sessionRef }));
+  const before = f.contexts.length; f.advanceProvider(); error(await f.execute('pap_status'), 'provider_disposed');
+  error(await f.execute('pap_request', { operationRef: operation.operationRef }), 'provider_disposed'); assert.equal(f.contexts.length, before);
+  value(await f.select()); assert(f.contexts.length > before); value(await f.execute('pap_request', { operationRef: operation.operationRef }));
+});
+for (const honorAbort of [true, false]) test(`PAP product: actual Loader unload aborts in-flight transport and rejects late result (honorAbort=${honorAbort})`, async t => {
+  const f = await fixture(t); const { operation, session } = await connected(f);
+  value(await f.manager.manage({ action: 'operation/enable', operationRef: operation.operationRef, sessionRef: session.sessionRef }));
+  let entered!: () => void; let release!: () => void; let aborted = false; const start = new Promise<void>(resolve => entered = resolve);
+  f.transport.override = (url, options) => url.endsWith('/api/cart') ? new Promise((resolve, reject) => {
+    release = () => resolve(jsonResponse(url, { shouldNeverCross: 'late-business-result' }));
+    options?.signal?.addEventListener('abort', () => { aborted = true; if (honorAbort) reject(new Error('Aborted transport')); }, { once: true }); entered();
+  }) : undefined;
+  const request = f.execute('pap_request', { operationRef: operation.operationRef }); await start;
+  const entry = [...f.loader.entries()].find(item => item.options.name === PAP_CONSUMER)!;
+  await f.loader.update(entry.id, { disabled: true }); assert.equal(aborted, true); if (!honorAbort) release();
+  const result = await request; assert.equal(result.ok, false); assert(!JSON.stringify(result).includes('late-business-result'));
+});
+test('PAP product: unload during selection persistence closes the unpublished next engine', async t => {
+  const f = await fixture(t); const service = f.service as any;
+  let entered!: () => void; let release!: () => void; const start = new Promise<void>(resolve => entered = resolve); const gate = new Promise<void>(resolve => release = resolve);
+  const persist = service.persistSelection.bind(service); service.persistSelection = async (reference: unknown) => { await persist(reference); entered(); await gate; };
+  const close = PapClient.prototype.close; let closed = 0; PapClient.prototype.close = function () { closed++; return close.call(this); };
+  t.after(() => { PapClient.prototype.close = close; });
+  const selection = f.select(); await start; const entry = [...f.loader.entries()].find(item => item.options.name === PAP_CONSUMER)!;
+  await f.loader.update(entry.id, { disabled: true }); release(); const result = await selection;
+  assert.equal(result.ok, false); assert.equal(closed, 1); assert.equal(service.client, undefined);
+});
+test('PAP product: actual sent credentials stay redacted after refresh then signout clears the Store', async t => {
+  const f = await fixture(t, { mode: 'account' }); const { operation, session, company } = await connected(f);
+  const pending = value(await f.manager.manage({ action: 'account/sign-in', sessionRef: session.sessionRef, operationRef: operation.operationRef, scopes: ['orders:read'] }));
+  const authorize = new URL(pending.authorizationUrl); f.setResponse({ state: authorize.searchParams.get('state')!, iss: f.transport.issuer, code: 'unit-one-time-code' });
+  value(await f.manager.manage({ action: 'account/collect', transactionRef: pending.transactionRef }));
+  const account = value(await f.manager.manage({ action: 'session/connect', companyRef: company.companyRef, accountSlot: pending.accountSlot }));
+  value(await f.manager.manage({ action: 'operation/enable', operationRef: operation.operationRef, sessionRef: account.sessionRef, scopes: ['orders:read'] }));
+  const engine = (f.service as unknown as { client: PapClient }).client;
+  await engine.store.transaction(state => { for (const grant of Object.values(state.grants)) grant.expiresAt = 0; });
+  let actualToken = ''; const nextRefresh = 'unit-new-refresh-secret';
+  f.transport.override = (url, options) => {
+    if (url.endsWith('/token')) return jsonResponse(url, { access_token: 'unit-new-access-secret', refresh_token: nextRefresh, token_type: 'DPoP', expires_in: 3600 });
+    if (url.endsWith('/api/cart')) { actualToken = options!.headers!.authorization!.split(' ')[1]!; return jsonResponse(url, { ok: true, unexpected: `message ${actualToken} embedded`, [actualToken]: 'also-key', nested: [nextRefresh] }); }
+  };
+  let entered!: () => void; let release!: () => void; const start = new Promise<void>(resolve => entered = resolve); const gate = new Promise<void>(resolve => release = resolve);
+  const dispatch = engine.dispatchPap.bind(engine); engine.dispatchPap = async (...args) => { const response = await dispatch(...args); entered(); await gate; return response; };
+  const request = f.execute('pap_request', { operationRef: operation.operationRef }); await start;
+  value(await f.manager.manage({ action: 'account/sign-out', accountSlot: pending.accountSlot }));
+  const state = await engine.store.read(); assert(!Object.values(state.grants).some(grant => grant.accessToken === actualToken || grant.refreshToken === nextRefresh));
+  release(); const result = await request; value(result); const visible = JSON.stringify(result);
+  assert(!visible.includes(actualToken)); assert(!visible.includes(nextRefresh));
+});
+test('PAP product: explicit reselection fences an old engine response even for the same identity and approval', async t => {
+  const f = await fixture(t); const { operation, session } = await connected(f);
+  value(await f.manager.manage({ action: 'operation/enable', operationRef: operation.operationRef, sessionRef: session.sessionRef }));
+  const engine = (f.service as unknown as { client: PapClient }).client;
+  let entered!: () => void; let release!: () => void; const start = new Promise<void>(resolve => entered = resolve); const gate = new Promise<void>(resolve => release = resolve);
+  const dispatch = engine.dispatchPap.bind(engine); engine.dispatchPap = async (...args) => { const response = await dispatch(...args); entered(); await gate; return response; };
+  const request = f.execute('pap_request', { operationRef: operation.operationRef }); await start; value(await f.select()); release();
+  error(await request, 'state_conflict'); value(await f.execute('pap_request', { operationRef: operation.operationRef }));
 });

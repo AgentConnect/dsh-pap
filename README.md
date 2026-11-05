@@ -34,7 +34,7 @@ Device 为后续独立阶段，当前返回 `unsupported_sign_in` 并且不广�
 
 C 的真实 Loader consumer 必须是精确 `@agentconnect/dsh-pap/plugin`。Host 在 C 管理面预批准相应身份、profile、target 和 scopes；Remote 只选择 `{storeId, identityId, did}`，不能提交 owner、client_id、policy、verified metadata 或 targetRef。F 捕获插件构造时的真实 Context；不会将随 Cordis Service 调用关联变化的 `this.ctx` 当作签名调用者。
 
-C 服务需实现 `bindProtocolConsumer(actualInstalledContext)` 与 `bindPapHostConsumer(actualInstalledContext)`。后者返回同进程 capability，`resolveBinding(identityRef, policyRef, profile)` 从当前已发布身份与政策得出 binding，`callbackManagementFor({identityRef,policyRef,targetRef})` 只返回 register/claim 两个受限操作。F 的 `ProtocolIdentityHost` 通过 C 真实 `registerValidatedTarget` 得到 opaque target，callback adapter 从加密事务重建相同 issuer/resource/scope 后取得该目标；不接受用户或模型提交的 opaque 引用。C factory 不可用时拒绝操作，不以组件 fixture 补位。
+C 服务需实现 `bindProtocolConsumer(actualInstalledContext)` 与 `bindPapHostConsumer(actualInstalledContext)`。后者返回同进程 capability，`resolveBinding(identityRef, policyRef, profile)` 从当前已发布身份与政策得出 binding，`callbackManagementFor({identityRef,policyRef,targetRef})` 只返回 register/claim 两个受限操作。F 的 `ProtocolIdentityHost` 通过 C 真实 `registerValidatedTarget` 得到 opaque target，callback adapter 从加密事务重建相同 issuer/resource/scope 后取得该目标；不接受用户或模型提交的 opaque 引用。C factory 不可用时拒绝操作，不以组件 fixture 补位。失效 capability 永不复活；status/工具不会自动重绑，仅用户显式 identity/select 或插件重载从实际 Context 重新取得当前许可。
 
 用户管理 namespace 为 `papManager`：`status()`、`operations()`、`manage(request)`。仅安装的 `@agentconnect/dsh-pap/management-remote` Context 可以取得管理 facade，部署必须把该 namespace 留在已认证的用户管理 Gateway，不接入 Agent 的 Remote/MCP 通用工具。闭合管理动作如下：
 
@@ -49,7 +49,7 @@ C 服务需实现 `bindProtocolConsumer(actualInstalledContext)` 与 `bindPapHos
 
 `account/sign-in` 的授权 URL 只返回给上述用户管理调用，需由真实用户 UI 打开。state、code、PKCE、callbackRef、claim secret、Token、key handle 不进入模型工具。此包提供管理 Remote 合同，不包含产品 settings 界面；Desktop owner 负责 UI 和 profile 的最终装入。
 
-模型只有 `pap_status`、`pap_operations`、`pap_request` 三个工具。`pap_request` 输入只含本地 `operationRef`、已声明 path/query 参数及可选 JSON body，不接受 URL、method、Header、resource、scopes、account slot 或认证 metadata。method/destination/resource/session 来自本地已发现描述与用户授权。每次启用产生新的持久授权 generation，撤销后重新启用也不能让旧的在途调用越过发送前 fence。操作输出只给有界业务 JSON／状态，不透传响应 Header，并遮盖凭据字段。当前工具是 HTTP operation adapter；MCP 描述不会被当成已经实现的 PAP MCP transport，机器 MCP 不作 PAP 回退。
+模型只有 `pap_status`、`pap_operations`、`pap_request` 三个工具。`pap_request` 输入只含本地 `operationRef`、已声明 path/query 参数及可选 JSON body，不接受 URL、method、Header、resource、scopes、account slot 或认证 metadata。method/destination/resource/session 来自本地已发现描述与用户授权。每次启用产生新的持久授权 generation，撤销后重新启用也不能让旧的在途调用越过发送前 fence。操作输出只给有界业务 JSON／状态，不透传响应 Header。除凭据字段和 JWT 模式外，实际发送前只在 Host 内存捕获本次 Session/DPoP/access/refresh 等值，任意 JSON key/value 或嵌入消息中的同值也遮盖；自动 refresh 后即使 sign-out 清空 Store，迟到 response 也不能回显新凭据。当前工具是 HTTP operation adapter；MCP 描述不会被当成已经实现的 PAP MCP transport，机器 MCP 不作 PAP 回退。
 
 状态 key 的 namespace 包含 PAP purpose、规范化 profile stateRoot 摘要以及 identity/owner/client binding 摘要；不同 profile 不复用同一 item。移动 profile 目录需要受控迁移其 protected item，不能只拷密文后创建新 key。状态根密钥默认使用真实 Linux Secret Service 的 `KeyringSecretStore`，不写明文或 env/RootKey fallback。缺少 `secret-tool`、后端锁定或既有 item 丢失时返回 `credential_unavailable`。可由受信同进程 `papHost.secrets` 注入其他 OS 的合规 `HostSecretStore`；该接口必须支持原子的 32-byte key 创建，不能把普通 credentials YAML 当成等价保护。可选 `./host-secrets` provider 仅供应 secrets；callback driver 一律从 C 目标绑定 factory 获取。既有密文对应 item 丢失时不会生成替代 key。
 
@@ -61,7 +61,7 @@ C 服务需实现 `bindProtocolConsumer(actualInstalledContext)` 与 `bindPapHos
 
 ## 本地状态与生命周期
 
-产品将 Company/Session/operation 授权保存在每个 identity binding 独立目录；`selected-identity.json` 仅保存三字段公开 reference（0600、原子替换），每次恢复仍需 C 重新批准 binding。`pap-state.enc` 以 AES-256-GCM 加密，AAD 绑定 schema 和 identity/owner/client 命名空间；目录 0700、文件 0600。跨进程锁内使用 fsync + rename 原子提交；公开映射、Delegation、Token、PKCE 和 callback 领取状态均不明文落盘。状态目录备份与 Host secret store 备份应分别保管。Keyring provider 的 locksRoot 须使用独立目录，不能与 PAP stateRoot 使用同一个锁目录。
+产品将 Company/Session/operation 授权保存在每个 identity binding 独立目录；`selected-identity.json` 仅保存三字段公开 reference（0600、原子替换），每次恢复仍需 C 重新批准 binding。`pap-state.enc` 以 AES-256-GCM 加密，AAD 绑定 schema 和 identity/owner/client 命名空间；目录 0700、文件 0600。跨进程锁内使用 fsync + rename 原子提交；公开映射、Delegation、Token、PKCE 和 callback 领取状态均不明文落盘。状态目录备份与 Host secret store 备份应分别保管。Cordis Context disposer 会关闭 engine、取消在途资源请求并 dispose C facade；输出前仍检查原 engine/selection 与调用 Context，忽略 abort 的旧 transport 也不能交出迟到结果。Keyring provider 的 locksRoot 须使用独立目录，不能与 PAP stateRoot 使用同一个锁目录。
 
 恢复后重新经 C 获取目标许可并复核 key handle；持久 handle 本身不授予签名权。中断的 refresh 标为 uncertain，换码中断要求重新授权。委托默认一小时且校验最大二十四小时；自动/显式轮换保持 User ID/sid，并保存旧 key 的停用重试引用。每次 key 创建先持久预留 attempt；创建回执未知时复用原幂等 operation，已停用的失败 attempt 则不会再用；退休未确认时先完成清理再创建下一把 key。外部 Company 可缓存 Delegation 到 exp，本地停止签名不等于立即全网撤销。
 
