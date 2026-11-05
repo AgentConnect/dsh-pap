@@ -1,6 +1,6 @@
 export { PapClient } from './client.js';
 export { PapError } from './errors.js';
-export type { PapErrorCode } from './errors.js';
+export type { PapErrorCode, PapAuthHint } from './errors.js';
 export { PapDiscovery } from './discovery.js';
 export { SafeHttpsTransport } from './network.js';
 export type { SafeHttpsOptions } from './network.js';

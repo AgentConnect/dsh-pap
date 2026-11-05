@@ -5,7 +5,7 @@ import lockfile from 'proper-lockfile';
 import type { HostSecretStore } from './host.js';
 import type { PapState } from './types.js';
 import { PapError, requirePap } from './errors.js';
-const empty = (): PapState => ({ schemaVersion: 1, generation: 0, companies: {}, subjects: {}, sessions: {}, delegations: {}, grants: {}, transactions: {}, nonces: {}, retirements: {}, accountSlots: {}, delegationAttempts: {} });
+const empty = (): PapState => ({ schemaVersion: 1, generation: 0, companies: {}, subjects: {}, sessions: {}, delegations: {}, grants: {}, transactions: {}, nonces: {}, cooldowns: {}, retirements: {}, accountSlots: {}, delegationAttempts: {} });
 
 /** Encrypted, cross-process serialized transactions. The master key stays in Host secret storage. */
 export class PapStore {
@@ -38,7 +38,7 @@ export class PapStore {
         state = JSON.parse(Buffer.concat([decipher.update(bytes.subarray(33)), decipher.final()]).toString());
         requirePap(state.schemaVersion === 1 && Number.isSafeInteger(state.generation) && state.companies && state.subjects && state.sessions && state.delegations && state.grants && state.transactions && state.nonces && state.retirements, 'state_corrupt');
         // Additive migration of the first private candidate; closed slots stay closed.
-        state.accountSlots ??= {}; state.delegationAttempts ??= {};
+        state.accountSlots ??= {}; state.delegationAttempts ??= {}; state.cooldowns ??= {};
         for (const grant of Object.values(state.grants)) {
           grant.accountEpoch ??= 1;
           const slot = state.accountSlots[grant.accountSlot] ??= { subjectRef: grant.subjectRef, epoch: grant.accountEpoch, signedOut: false };

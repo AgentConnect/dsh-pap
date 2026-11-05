@@ -82,3 +82,19 @@ A owner 另对当前 host 做真实缺后端 keyring 检查：缺少 secret-tool
 前期 harness 断言曾误用成功 read 之前的密文摘要（read 会推进 generation），另有 host log stream 收尾和运行中 CLI unlock 假设的问题；修正验证编排后重新执行，旧失败结果保留且不计通过。锁定后的恢复采用真实 daemon 重启并从 stdin 提供同一密码，不冒称 headless in-place CLI unlock 成功。
 
 原宿主 negative result 完整保留。结论是 isolated_container_real_secret_service，不是“宿主已配置 keyring”。另已核对 C clean `481ac1707b2287b03a08725141ce81d983dcda6a` 与前述两真实组件执行时的 7 个关键源文件完全同字节；可绑定 C481/Bf2/G242 的已测来源，不再只停在 dirty source 描述。
+
+## P22 实际客户端缺口修复与 P06 fixture 回归
+
+只读 P01–P28 快照位于统一 `.artifacts/completion-audit/pap.json`，保留当时 P22 partial 的事实；后续最新总审计由 H 合并，未把其他缺口静默改成通过。本轮增加持久加密 resource/AS 冷却命名空间，Retry-After 精确 deadline（delta 与三种 HTTP-date）、跨实例/新进程恢复、短窗等待/长窗剩余提示、取消与重新授权检查；429 不自动重放原请求，也不以 cap300 提前发出。标准 Bearer/DPoP challenge 优先于 JSON，并只提供严格校验后的 scope/PRM 管理提示；无 metadata fetch 或 Token/resource 自动跳转，不记录远端描述。
+
+H 指出的发送窗口也已关闭：签名后若因 Store 锁/secret resolver 挂起，恢复后的持锁 callback 会重新 await 实际 C Session/DPoP lease.assertActive，再同步复核本地 generation/epoch 到 HTTP start。受控 resolver 挂起→撤销 fixture lease→恢复的直接回归观察到一条签名、**零 physical request**，没有输出 JWT。
+
+实际命令：`npm run typecheck && npx tsx --test tests/cooldown-challenge.test.ts tests/client.test.ts tests/network-store.test.ts`，最终 **48/48** 通过；原生 TAP 为 ignored `.artifacts/p22-owner.tap`。其中新文件18项（含 P06 fixture），client26项和storage/network4项。没有跑 System Test、产品 E2E 或其他全量套件。
+
+直接证据包括：真实 HTTPS 的一秒窗口与两个显式并发 client、签名/物理请求零提前；HTTP-date fence 在新 Node 进程恢复且 signer/network 均0；3601秒窗口不截短；disconnect/signout/close 取消且保留fence；scope/epoch/lease复查；同origin AS/resource互不阻塞；AS429并发等待一致返回rate_limited而不误报reauth；challenge-only/空JSON、header优先、quoted challenge、多scheme、重复参数、unsafe URL/scope丢弃、无副作用重放、非标准Session错误不能触发OAuth重试。AS时间/错误矩阵使用明确FixtureTransport边界，不冒充新真实G限流运行。
+
+新增 P06 client unit/fixture：已持有效标准grant后重新发现disabled=true、issuer不变，即使scope广告省略也允许按本地grant/C许可向AS实际refresh；new sign-in拒绝；AS返回invalid_grant后本地reauthorization_required，Company仍disabled/issuer，不降无AS、不转CC/JWT Session grant。此项不替代 H/G 的真实disabled服务专项。
+
+旧 client 回归原来在429后立即检查许可撤销，现因持久fence先返回rate_limited，已用显式测试时钟走过该窗口再隔离检查permission_denied；不是清除生产fence。
+
+此前容器SecretService正向测试仍绑定旧输入包/Store源码；本轮Store只加cooldowns的加密schema默认值/迁移，cipher/atomic/key逻辑未改，keyring实现未改。最新focused storage regression通过，但不把旧container Store整文件hash称为当前相同；宿主未配置的边界不变。

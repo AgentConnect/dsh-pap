@@ -31,5 +31,7 @@ export interface CallbackHandoff {
 export interface PapHostOptions {
   binding: Binding; identityHost: PapIdentityHost; secretStore: HostSecretStore; stateRoot: string;
   callbackHandoff?: CallbackHandoff; clock?: () => number;
+  /** Maximum local inline cooldown wait, 0..5000ms; this never shortens the persisted server fence. */
+  inlineCooldownWaitMs?: number;
 }
 export type { AsMetadata, IdentityRef };

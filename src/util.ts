@@ -44,13 +44,6 @@ export function matchedRoute(template: string, actual: string): boolean {
   const got = url.pathname.split('/');
   return got.length === parts.length && parts.every((part, index) => part === '__pap_parameter__' ? Boolean(got[index]) && !['.', '..'].includes(got[index]!) : part === got[index]);
 }
-export function retryAfter(response: HttpResponse): number | undefined {
-  const value = response.headers['retry-after'];
-  if (!value) return undefined;
-  const numeric = Number(value);
-  return Number.isFinite(numeric) && numeric >= 0 ? Math.min(numeric, 300) : undefined;
-}
-
 /** Explicit PAP account callback lane; this exception never applies to public or resource URLs. */
 export function isPapLoopbackRedirect(value: string): boolean {
   if (typeof value !== 'string' || value.length > 2048 || /[^\x21-\x7e]|\\/.test(value) || /%(?![0-9a-fA-F]{2})/.test(value)) return false;

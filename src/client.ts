@@ -1,20 +1,27 @@
+import { setTimeout as delay } from 'node:timers/promises';
+import { asCooldownKey, assertCooldownElapsed, cooldownError, recordCooldown, remainingCooldownMs, resourceCooldownKey, responseHeader } from './cooldown.js';
+import { protocolFailure } from './auth-challenge.js';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { PapDiscovery } from './discovery.js';
-import { PapError, requirePap } from './errors.js';
+import { PapError, requirePap, type PapAuthHint } from './errors.js';
 import type { PapHostOptions, PapSigningLease } from './host.js';
 import { PapStore } from './store.js';
 import { DelegationAttemptFailure, newDelegation, thumbprint, verifyCompact } from './delegation.js';
 import type { AuthTransaction, Company, Delegation, Grant, HttpResponse, HttpTransport, KeyRef, Operation, PapState, Session, Subject } from './types.js';
-import { httpsUrl, htu, id, isPapLoopbackRedirect, jwtParts, matchedRoute, parseJson, retryAfter, scopeFor, sha256 } from './util.js';
+import { httpsUrl, htu, id, isPapLoopbackRedirect, jwtParts, matchedRoute, parseJson, scopeFor, sha256 } from './util.js';
 
 function secureEqual(a: unknown, b: string): boolean {
   return typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 const protectedHeaders = new Set(['authorization','dpop','poppy-session','host','cookie','proxy-authorization','content-length','connection','transfer-encoding']);
-const knownError = (response: HttpResponse): string | undefined => {
-  try { const body = parseJson(response); if (typeof body?.error === 'string') return body.error; } catch {}
-  const header = response.headers['www-authenticate']; return header?.match(/\berror="([a-z_]+)"/i)?.[1];
-};
+interface WaitContext { subjectRef: string; sessionRef?: string; accountSlot?: string; accountEpoch?: number; allowSignedOut?: boolean; grantRef?: string; grantGeneration?: number; transactionRef?: string }
+interface AccountRequestControl { purpose?: 'token'|'revoke'; scopes: readonly string[]; accountEpoch?: number; sessionRef?: string; grantRef?: string; grantGeneration?: number; transactionRef?: string }
+function authenticationError(code: string | undefined, hint?: PapAuthHint): PapError {
+  if (code === 'insufficient_scope' || code === 'invalid_scope' || code === 'invalid_target' || code === 'invalid_client' || code === 'invalid_token' || code === 'invalid_dpop_proof' || code === 'unauthorized_client') return new PapError(code, undefined, hint);
+  if (code === 'invalid_grant') return new PapError('reauthorization_required', undefined, hint);
+  if (code === 'access_denied') return new PapError('permission_denied', undefined, hint);
+  return new PapError('oauth_error', undefined, hint);
+}
 function sameBinding(subject: Subject, options: PapHostOptions): boolean {
   return JSON.stringify(subject.binding) === JSON.stringify(options.binding);
 }
@@ -27,14 +34,16 @@ export class PapClient {
   private closed = false;
   private readonly discoveryFlights = new Map<string, Promise<void>>();
   private readonly recentJtis = new Map<string, number>();
+  private readonly cooldownWaiters = new Set<{ controller: AbortController; context: WaitContext }>();
   private readonly refreshFlights = new Map<string, Promise<void>>();
   private readonly abortedSessions = new Map<string, Set<AbortController>>();
   constructor(private readonly options: PapHostOptions, private readonly transport: HttpTransport) {
+    requirePap(options.inlineCooldownWaitMs === undefined || Number.isInteger(options.inlineCooldownWaitMs) && options.inlineCooldownWaitMs >= 0 && options.inlineCooldownWaitMs <= 5000, 'permission_denied');
     this.clock = options.clock ?? (() => Date.now());
     this.store = new PapStore(options.stateRoot, options.secretStore, sha256(JSON.stringify(options.binding)));
     this.discovery = new PapDiscovery(transport, this.clock);
   }
-  close(): void { this.closed = true; for (const active of this.abortedSessions.values()) for (const controller of active) controller.abort(); this.options.identityHost.dispose?.(); }
+  close(): void { this.closed = true; for (const waiter of this.cooldownWaiters) waiter.controller.abort(new PapError('disconnected')); for (const active of this.abortedSessions.values()) for (const controller of active) controller.abort(); this.options.identityHost.dispose?.(); }
   async recover(): Promise<void> { await this.store.recover(); }
   async resolvePapCompany(domain: string): Promise<{ companyRef: string; companyId: string; name: string; authMode: Company['authMode']; scopes: string[] }> {
     // Failed discovery never commits or erases a previous issuer.
@@ -106,16 +115,38 @@ export class PapClient {
     const lease = await this.options.identityHost.acquire(subject.binding, company, purpose, resource, destination, requestedScopes);
     const identity = await lease.getOAuthClientIdentity(); requirePap(identity.clientId === subject.binding.clientId, 'permission_denied'); await lease.assertActive(); return lease;
   }
+  private assertWaitActive(state: PapState, context: WaitContext): void {
+    requirePap(!this.closed, 'disconnected'); const subject = this.subject(state, context.subjectRef);
+    if (context.sessionRef) { const session = this.session(state, context.sessionRef); requirePap(this.sameUser(state, session.subjectRef, subject), 'permission_denied'); if (context.accountSlot) requirePap(session.accountSlot === context.accountSlot, 'reauthorization_required'); }
+    if (context.accountSlot && context.accountEpoch !== undefined) {
+      const slot = state.accountSlots[context.accountSlot]; requirePap(slot && this.sameUser(state, slot.subjectRef, subject) && slot.epoch === context.accountEpoch && slot.signedOut === Boolean(context.allowSignedOut), 'reauthorization_required');
+    }
+    if (context.transactionRef) { const transaction = state.transactions[context.transactionRef]; requirePap(transaction?.status === 'exchanging' && transaction.accountSlot === context.accountSlot && transaction.accountEpoch === context.accountEpoch, 'reauthorization_required'); }
+    if (context.grantRef) { const grant = state.grants[context.grantRef]; requirePap(grant && grant.generation === context.grantGeneration && grant.status === (context.allowSignedOut ? 'revocation_pending' : 'refreshing'), 'state_conflict'); }
+  }
+  private async awaitCooldown(key: string, context: WaitContext): Promise<void> {
+    const controller = new AbortController(); const waiter = { controller, context }; this.cooldownWaiters.add(waiter);
+    try {
+      for (;;) {
+        if (controller.signal.aborted) throw controller.signal.reason;
+        const state = await this.store.read(); this.assertWaitActive(state, context); const remaining = remainingCooldownMs(state, key, this.clock());
+        if (remaining === 0n) return;
+        if (remaining > BigInt(this.options.inlineCooldownWaitMs ?? 1500)) throw cooldownError(state, key, this.clock());
+        try { await delay(Math.min(Number(remaining), 50), undefined, { signal: controller.signal }); }
+        catch { if (controller.signal.aborted) throw controller.signal.reason; throw new PapError('disconnected'); }
+      }
+    } finally { this.cooldownWaiters.delete(waiter); }
+  }
   async rotateDelegation(subjectRef: string): Promise<void> {
     const subject = this.subject(await this.store.read(), subjectRef);
     const lease = await this.lease(subject, 'pap_session', subject.companyId);
     await this.delegation(subject, lease, true);
   }
-  private async delegation(subject: Subject, lease: PapSigningLease, force = false): Promise<Delegation> {
+  private async delegation(subject: Subject, lease: PapSigningLease, force = false, assertAllowed?: (state: PapState) => void): Promise<Delegation> {
     await this.cleanupRetirements(subject, lease);
     // Reserve before creating a key: failure/retirement must never roll back the create operation id.
     const reservation = await this.store.transaction(state => {
-      this.subject(state, subject.ref);
+      this.subject(state, subject.ref); assertAllowed?.(state);
       const existing = state.delegations[subject.ref];
       if (!force && existing && existing.expiresAt > this.clock() + 30000) return { existing };
       requirePap(!Object.values(state.retirements).some(x => x.subjectRef === subject.ref), 'delegation_blocked');
@@ -127,7 +158,7 @@ export class PapClient {
     if (reservation.existing) { await this.cleanupRetirements(subject, lease); return reservation.existing; }
     const attempt = reservation.attempt!;
     const result = await this.store.transaction(async state => {
-      this.subject(state, subject.ref);
+      this.subject(state, subject.ref); assertAllowed?.(state);
       const current = state.delegationAttempts[subject.ref];
       requirePap(current?.sequence === attempt.sequence, 'state_conflict');
       const existing = state.delegations[subject.ref];
@@ -173,7 +204,13 @@ export class PapClient {
     let retriedSession = false; let retriedToken = false; let retriedNonce = false;
     let accountContext: { slot: string; epoch: number } | undefined;
     for (;;) {
-      const initial = await this.store.read(); await this.ensureCompanyFresh(this.session(initial, sessionRef).subjectRef);
+      const initial = await this.store.read(); const initialSession = this.session(initial, sessionRef); const initialSubject = this.subject(initial, initialSession.subjectRef); const initialCompany = this.company(initial, initialSubject.companyRef);
+      const initialMethod = (frozen.method ?? 'GET').toUpperCase(); const initialUrl = httpsUrl(frozen.url).href;
+      const initialRoute = initialCompany.routes.find(route => route.method === initialMethod && matchedRoute(route.template, initialUrl)); requirePap(initialRoute, 'unsafe_destination');
+      const waitContext: WaitContext = { subjectRef: initialSubject.ref, sessionRef, accountSlot: initialSession.accountSlot, accountEpoch: initialSession.accountSlot ? initial.accountSlots[initialSession.accountSlot]?.epoch : undefined };
+      if (waitContext.accountSlot) { requirePap(waitContext.accountEpoch !== undefined, 'reauthorization_required'); accountContext ??= { slot: waitContext.accountSlot, epoch: waitContext.accountEpoch }; }
+      await this.awaitCooldown(resourceCooldownKey(initialCompany.companyId, initialRoute.resource), waitContext);
+      await this.ensureCompanyFresh(initialSession.subjectRef);
       const state = await this.store.read(); const session = this.session(state, sessionRef); const subject = this.subject(state, session.subjectRef); const company = this.company(state, subject.companyRef);
       const method = (frozen.method ?? 'GET').toUpperCase(); const url = httpsUrl(frozen.url).href;
       requirePap(/^[A-Z]+$/.test(method), 'unsafe_destination');
@@ -192,22 +229,27 @@ export class PapClient {
         requirePap(subject.mode === 'regular' && grant.clientId === subject.binding.clientId && grant.issuer === company.issuer, 'permission_denied');
         requirePap((frozen.scopes ?? []).every(x => grant!.scope.includes(x)), 'insufficient_scope');
         if ((grant.expiresAt !== undefined && grant.expiresAt <= this.clock()) || grant.usableUntil <= this.clock()) {
-          if (!retriedToken && grant.refreshToken) { await this.refreshAccountGrant(grant.ref); retriedToken = true; continue; }
+          if (!retriedToken && grant.refreshToken) { await this.refreshAccountGrant(grant.ref, sessionRef); retriedToken = true; continue; }
           throw new PapError('reauthorization_required');
         }
       } else requirePap((frozen.scopes?.length ?? 0) === 0, 'reauthorization_required');
+      const cooldownKey = resourceCooldownKey(company.companyId, route.resource);
+      const allowed = (current: PapState) => { this.assertWaitActive(current, waitContext); assertCooldownElapsed(current, cooldownKey, this.clock()); };
       const lease = await this.lease(subject, 'pap_session', route.resource, url);
-      const delegation = await this.delegation(subject, lease);
+      const delegation = await this.delegation(subject, lease, false, allowed);
+      await this.store.transaction(current => allowed(current));
       const sessionJwt = await lease.signPapSessionRequest({ key: delegation.key, scope: scopeFor(subject), delegation: delegation.compact, clientId: subject.binding.clientId, sid: session.sid, sub: subject.userId, agentId: subject.agentId, httpMethod: method, httpUri: url, accessToken: grant?.accessToken });
       this.checkSessionJwt(sessionJwt, delegation, subject, session, method, url, grant?.accessToken);
       const sentHeaders: Record<string, string> = { ...headers, 'poppy-session': sessionJwt };
+      let dpopLease: PapSigningLease | undefined;
       if (grant) {
         sentHeaders.authorization = `${grant.tokenType} ${grant.accessToken}`;
         if (grant.tokenType === 'DPoP') {
           requirePap(grant.dpopKey, 'credential_unavailable');
-          const dpopLease = await this.lease(subject, 'pap_account', grant.resource, url, grant.scope);
+          dpopLease = await this.lease(subject, 'pap_account', grant.resource, url, grant.scope);
           try {
-            sentHeaders.dpop = await dpopLease.signDpopProof({ key: grant.dpopKey, scope: scopeFor(subject, grant.accountSlot), httpMethod: method, httpUri: url, accessToken: grant.accessToken, nonce: state.nonces[`resource:${new URL(url).origin}`] });
+            const nonce = await this.store.transaction(current => { allowed(current); return current.nonces[`resource:${new URL(url).origin}`]; });
+            sentHeaders.dpop = await dpopLease!.signDpopProof({ key: grant.dpopKey!, scope: scopeFor(subject, grant.accountSlot), httpMethod: method, httpUri: url, accessToken: grant.accessToken, nonce });
           } catch (error) {
             if (error instanceof PapError && error.code === 'credential_unavailable') await this.store.transaction(current => { const item = current.grants[grant.ref]; if (item?.generation === grant.generation) { item.status = 'reauthorization_required'; item.generation++; } });
             throw error;
@@ -222,30 +264,33 @@ export class PapClient {
       try {
         // Same lock orders local disconnect/signout versus actual dispatch. No await between final CAS and HTTP start.
         response = await this.store.transaction(async current => {
+          try { await lease.assertActive(); await dpopLease?.assertActive(); } catch { throw new PapError('permission_denied'); }
+          allowed(current); requirePap(!controller.signal.aborted, 'disconnected');
           const currentSession = this.session(current, sessionRef);
           requirePap(this.company(current, subject.companyRef).generation === company.generation && currentSession.generation === session.generation && current.delegations[subject.ref]?.generation === delegation.generation, 'state_conflict');
           if (grant) { this.assertAccountEpoch(current, subject, grant.accountSlot, grant.accountEpoch); requirePap(current.grants[grant.ref]?.generation === grant.generation && current.grants[grant.ref]?.status === 'active', 'state_conflict'); }
-          return this.transport.request(url, { method, headers: sentHeaders, body: frozen.body, signal: controller.signal });
+          const response = await this.transport.request(url, { method, headers: sentHeaders, body: frozen.body, signal: controller.signal });
+          if (response.status === 429) recordCooldown(current, cooldownKey, response, this.clock());
+          return response;
         });
       } catch (error) { if (error instanceof PapError) throw error; throw new PapError('request_uncertain'); }
       finally { active.delete(controller); if (active.size === 0) this.abortedSessions.delete(sessionRef); }
       if (response.status >= 300 && response.status < 400) throw new PapError('redirect_blocked');
-      const error = knownError(response);
+      if (response.status === 429) { const limited = await this.store.read(); throw cooldownError(limited, cooldownKey, this.clock()); }
+      const failure = protocolFailure(response, company, route.resource, grant?.tokenType); const error = failure.code;
       if (error === 'session_ended') {
         if (retriedSession) throw new PapError('session_ended'); retriedSession = true;
         await this.store.transaction(current => { const value = this.session(current, sessionRef); requirePap(value.generation === session.generation, 'state_conflict'); value.sid = id('ses'); value.generation++; }); continue;
       }
       if (error === 'invalid_session') throw new PapError('invalid_session');
-      if (response.status === 429) throw new PapError('rate_limited', retryAfter(response));
-      if (grant && error === 'use_dpop_nonce' && response.headers['dpop-nonce'] && !retriedNonce) {
-        retriedNonce = true; await this.saveNonce(`resource:${new URL(url).origin}`, response.headers['dpop-nonce']); continue;
+      if (grant && error === 'use_dpop_nonce' && responseHeader(response, 'dpop-nonce') && !retriedNonce) {
+        retriedNonce = true; await this.saveNonce(`resource:${new URL(url).origin}`, responseHeader(response, 'dpop-nonce')!); if (['GET','HEAD','OPTIONS'].includes(method)) continue; throw authenticationError('invalid_dpop_proof', failure.hint);
       }
       if (grant && error === 'invalid_token') {
-        if (!retriedToken && grant.refreshToken) { retriedToken = true; await this.refreshAccountGrant(grant.ref); continue; }
-        throw new PapError('invalid_token');
+        if (!retriedToken && grant.refreshToken && ['GET','HEAD','OPTIONS'].includes(method)) { retriedToken = true; await this.refreshAccountGrant(grant.ref, sessionRef); continue; }
+        throw authenticationError('invalid_token', failure.hint);
       }
-      if (error === 'insufficient_scope') throw new PapError('insufficient_scope');
-      if (error === 'unauthorized_client') throw new PapError('unauthorized_client');
+      if (error === 'insufficient_scope' || error === 'unauthorized_client' || failure.challenge) throw authenticationError(error, failure.hint);
       return response;
     }
   }
@@ -311,7 +356,7 @@ export class PapClient {
     if (tx.status === 'failed') throw new PapError('oauth_error');
     const state = await this.store.read(); const subject = this.subject(state, tx.subjectRef); const company = this.company(state, subject.companyRef);
     try {
-      const result = await this.tokenRequest(subject, company, tx.resource, tx.accountSlot, tx.dpopKey, { grant_type: 'authorization_code', code: response.code!, redirect_uri: tx.redirectUri, code_verifier: tx.verifier, resource: tx.resource }, undefined, tx.scope, tx.accountEpoch);
+      const result = await this.tokenRequest(subject, company, tx.resource, tx.accountSlot, tx.dpopKey, { grant_type: 'authorization_code', code: response.code!, redirect_uri: tx.redirectUri, code_verifier: tx.verifier, resource: tx.resource }, { scopes: tx.scope, accountEpoch: tx.accountEpoch, transactionRef: tx.ref });
       const grant = this.parseGrant(result, tx, tx.dpopKey);
       requirePap(grant.refreshToken, 'oauth_error');
       const committed = await this.store.transaction(current => {
@@ -345,41 +390,46 @@ export class PapClient {
       expiresAt: body.expires_in === undefined ? undefined : this.clock() + Number(body.expires_in) * 1000,
       usableUntil: this.clock() + 86400000, accountEpoch: tx.accountEpoch, generation: (prior?.generation ?? 0) + 1, status: 'active' };
   }
-  private async tokenRequest(subject: Subject, company: Company, resource: string, accountSlot: string, key: KeyRef | undefined, fields: Record<string,string>, endpoint?: string, requestedScopes: readonly string[] = [], accountEpoch?: number): Promise<HttpResponse> {
-    const metadata = company.metadata; requirePap(metadata && company.issuer, 'unsupported_sign_in');
-    const target = endpoint ?? metadata.token_endpoint; httpsUrl(target);
+  private async tokenRequest(subject: Subject, company: Company, resource: string, accountSlot: string, key: KeyRef | undefined, fields: Record<string,string>, control: AccountRequestControl): Promise<HttpResponse> {
+    requirePap(company.issuer, 'unsupported_sign_in'); const cooldownKey = asCooldownKey(company.companyId, company.issuer);
+    const context: WaitContext = { subjectRef: subject.ref, sessionRef: control.sessionRef, accountSlot, accountEpoch: control.accountEpoch, allowSignedOut: control.purpose === 'revoke', grantRef: control.grantRef, grantGeneration: control.grantGeneration, transactionRef: control.transactionRef };
     let retriedNonce = false;
     for (;;) {
-      const lease = await this.lease(subject, 'pap_account', resource, target, requestedScopes);
-      const assertion = await lease.signOAuthClientAssertion();
-      const parts = jwtParts(assertion); requirePap(parts.payload.iss === subject.binding.clientId && parts.payload.sub === subject.binding.clientId && parts.payload.aud === company.issuer, 'permission_denied');
+      await this.awaitCooldown(cooldownKey, context); await this.ensureCompanyFresh(subject.ref);
+      const latest = await this.store.read(); const currentSubject = this.subject(latest, subject.ref); const currentCompany = this.company(latest, currentSubject.companyRef); this.assertWaitActive(latest, context);
+      requirePap(currentCompany.issuer === company.issuer && currentCompany.routes.some(route => route.resource === resource), 'namespace_changed');
+      if (control.purpose !== 'revoke') { const currentScopes = control.grantRef ? latest.grants[control.grantRef]?.scope : control.transactionRef ? latest.transactions[control.transactionRef]?.scope : undefined; requirePap(currentScopes && control.scopes.every(scope => currentScopes.includes(scope)), 'insufficient_scope'); }
+      const target = control.purpose === 'revoke' ? currentCompany.metadata?.revocation_endpoint : currentCompany.metadata?.token_endpoint; requirePap(target, 'unsupported_sign_in'); httpsUrl(target);
+      const lease = await this.lease(currentSubject, 'pap_account', resource, target, control.scopes);
+      await this.store.transaction(state => { this.assertWaitActive(state, context); assertCooldownElapsed(state, cooldownKey, this.clock()); });
+      const assertion = await lease.signOAuthClientAssertion(); const parts = jwtParts(assertion);
+      requirePap(parts.payload.iss === subject.binding.clientId && parts.payload.sub === subject.binding.clientId && parts.payload.aud === company.issuer, 'permission_denied');
       const body = new URLSearchParams({ ...fields, client_id: subject.binding.clientId, client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer', client_assertion: assertion }).toString();
       const headers: Record<string,string> = { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' };
       if (key) {
         requirePap(key.purpose === 'pap_dpop' && thumbprint(key.public_jwk) === key.thumbprint, 'credential_unavailable');
-        const state = await this.store.read(); headers.dpop = await lease.signDpopProof({ key, scope: scopeFor(subject, accountSlot), httpMethod: 'POST', httpUri: target, nonce: state.nonces[`authorization:${company.issuer}`] });
+        const nonce = await this.store.transaction(state => { this.assertWaitActive(state, context); assertCooldownElapsed(state, cooldownKey, this.clock()); return state.nonces[`authorization:${company.issuer}`]; });
+        headers.dpop = await lease.signDpopProof({ key, scope: scopeFor(subject, accountSlot), httpMethod: 'POST', httpUri: target, nonce });
       }
-      await lease.assertActive();
-      let result: HttpResponse;
+      await lease.assertActive(); const signed = { body, headers };
       let sent: Promise<{ response?: HttpResponse; failed?: true }> | undefined;
-      // Start under the slot lock, then release it while HTTP is in flight so signout can cancel promptly.
-      await this.store.transaction(state => {
-        if (accountEpoch !== undefined) this.assertAccountEpoch(state, this.subject(state, subject.ref), accountSlot, accountEpoch);
-        sent = this.transport.request(target, { method: 'POST', headers, body }).then(response => ({ response }), () => ({ failed: true as const }));
+      await this.store.transaction(async state => {
+        try { await lease.assertActive(); } catch { throw new PapError('permission_denied'); }
+        this.assertWaitActive(state, context); assertCooldownElapsed(state, cooldownKey, this.clock());
+        sent = this.transport.request(target, { method: 'POST', headers: signed.headers, body: signed.body }).then(response => ({ response }), () => ({ failed: true as const }));
       });
-      const outcome = await sent!; requirePap(outcome.response && !outcome.failed, 'request_uncertain'); result = outcome.response;
+      const outcome = await sent!; requirePap(outcome.response && !outcome.failed, 'request_uncertain'); const result = outcome.response;
+      if (result.status === 429) { await this.store.transaction(state => recordCooldown(state, cooldownKey, result, this.clock())); throw cooldownError(await this.store.read(), cooldownKey, this.clock()); }
       requirePap(result.status < 300 || result.status >= 400, 'redirect_blocked');
-      if (key && knownError(result) === 'use_dpop_nonce' && result.headers['dpop-nonce'] && !retriedNonce) {
-        retriedNonce = true; await this.saveNonce(`authorization:${company.issuer}`, result.headers['dpop-nonce']); continue;
-      }
-      if (knownError(result) === 'invalid_grant') throw new PapError('reauthorization_required');
-      if (knownError(result) === 'unauthorized_client') throw new PapError('unauthorized_client');
+      const failure = protocolFailure(result, currentCompany, resource, key ? 'DPoP' : undefined);
+      if (key && failure.code === 'use_dpop_nonce' && responseHeader(result,'dpop-nonce') && !retriedNonce) { retriedNonce = true; await this.saveNonce(`authorization:${company.issuer}`, responseHeader(result,'dpop-nonce')!); continue; }
+      if (failure.code === 'invalid_grant' || failure.code === 'unauthorized_client' || failure.challenge) throw authenticationError(failure.code, failure.hint);
       return result;
     }
   }
-  async refreshAccountGrant(grantRef: string): Promise<void> {
+  async refreshAccountGrant(grantRef: string, sessionRef?: string): Promise<void> {
     const prior = this.refreshFlights.get(grantRef); if (prior) return prior;
-    const flight = this.refresh(grantRef); this.refreshFlights.set(grantRef, flight);
+    const flight = this.refresh(grantRef, sessionRef); this.refreshFlights.set(grantRef, flight);
     try { await flight; } finally { if (this.refreshFlights.get(grantRef) === flight) this.refreshFlights.delete(grantRef); }
   }
   private async waitForRefresh(grantRef: string, accountEpoch: number, refreshingGeneration: number, joinLocal = true): Promise<void> {
@@ -389,13 +439,13 @@ export class PapClient {
       const state = await this.store.read(); const grant = state.grants[grantRef];
       requirePap(grant && grant.accountEpoch === accountEpoch, 'reauthorization_required');
       this.assertAccountEpoch(state, this.subject(state, grant.subjectRef), grant.accountSlot, accountEpoch);
-      if (grant.status === 'active' && grant.generation > refreshingGeneration) return;
+      if (grant.status === 'active' && grant.generation > refreshingGeneration) { const subject = this.subject(state, grant.subjectRef); assertCooldownElapsed(state, asCooldownKey(subject.companyId, grant.issuer), this.clock()); return; }
       requirePap(grant.status === 'refreshing' && grant.generation === refreshingGeneration, 'reauthorization_required');
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     throw new PapError('reauthorization_required');
   }
-  private async refresh(grantRef: string): Promise<void> {
+  private async refresh(grantRef: string, sessionRef?: string): Promise<void> {
     const claim = await this.store.transaction(state => {
       const grant = state.grants[grantRef]; requirePap(grant && grant.refreshToken, 'reauthorization_required');
       this.assertAccountEpoch(state, this.subject(state, grant.subjectRef), grant.accountSlot, grant.accountEpoch);
@@ -407,7 +457,7 @@ export class PapClient {
     const claimed = claim.claimed!;
     const state = await this.store.read(); const subject = this.subject(state, claimed.subjectRef); const company = this.company(state, subject.companyRef);
     try {
-      const response = await this.tokenRequest(subject, company, claimed.resource, claimed.accountSlot, claimed.dpopKey, { grant_type: 'refresh_token', refresh_token: claimed.refreshToken!, resource: claimed.resource, scope: claimed.scope.join(' ') }, undefined, claimed.scope, claimed.accountEpoch);
+      const response = await this.tokenRequest(subject, company, claimed.resource, claimed.accountSlot, claimed.dpopKey, { grant_type: 'refresh_token', refresh_token: claimed.refreshToken!, resource: claimed.resource, scope: claimed.scope.join(' ') }, { scopes: claimed.scope, accountEpoch: claimed.accountEpoch, sessionRef, grantRef: claimed.ref, grantGeneration: claimed.generation });
       const next = this.parseGrant(response, claimed, claimed.dpopKey, claimed);
       const committed = await this.store.transaction(current => {
         const grant = current.grants[grantRef];
@@ -420,7 +470,7 @@ export class PapClient {
       });
       requirePap(committed, 'revocation_pending');
     } catch (error) {
-      await this.store.transaction(current => { const grant = current.grants[grantRef]; if (grant?.generation === claimed.generation && grant.status === 'refreshing') { grant.status = error instanceof PapError && error.code === 'request_uncertain' ? 'uncertain' : 'reauthorization_required'; grant.generation++; } }); throw error;
+      await this.store.transaction(current => { const grant = current.grants[grantRef]; if (grant?.generation === claimed.generation && grant.status === 'refreshing') { grant.status = error instanceof PapError && error.code === 'request_uncertain' ? 'uncertain' : error instanceof PapError && ['rate_limited','disconnected'].includes(error.code) ? 'active' : 'reauthorization_required'; grant.generation++; } }); throw error;
     }
   }
   async signOutAccount(subjectRef: string, accountSlot: string): Promise<{ status: 'signed_out' | 'revocation_pending' }> {
@@ -439,13 +489,14 @@ export class PapClient {
       for (const session of Object.values(state.sessions)) if (this.sameUser(state, session.subjectRef, subject) && session.accountSlot === accountSlot) { delete session.accountSlot; session.generation++; }
       return grants;
     });
+    for (const waiter of this.cooldownWaiters) if (waiter.context.accountSlot === accountSlot) waiter.controller.abort(new PapError('reauthorization_required'));
     let pending = refreshInFlight;
     for (const grant of grants) {
       if (!grant.refreshToken) continue;
       const state = await this.store.read(); const subject = this.subject(state, subjectRef); const company = this.company(state, subject.companyRef);
       try {
         requirePap(company.metadata?.revocation_endpoint, 'revocation_pending');
-        const result = await this.tokenRequest(subject, company, grant.resource, grant.accountSlot, grant.dpopKey, { token: grant.refreshToken, token_type_hint: 'refresh_token' }, company.metadata.revocation_endpoint, grant.scope);
+        const result = await this.tokenRequest(subject, company, grant.resource, grant.accountSlot, grant.dpopKey, { token: grant.refreshToken, token_type_hint: 'refresh_token' }, { purpose: 'revoke', scopes: grant.scope, accountEpoch: state.accountSlots[grant.accountSlot]!.epoch, grantRef: grant.ref, grantGeneration: grant.generation });
         requirePap(result.status === 200, 'revocation_pending');
         await this.store.transaction(current => { const item = current.grants[grant.ref]; if (item && item.generation === grant.generation && item.status === 'revocation_pending') { item.status = 'signed_out'; delete item.refreshToken; item.generation++; } });
       } catch { pending = true; }
@@ -453,6 +504,7 @@ export class PapClient {
     return { status: pending ? 'revocation_pending' : 'signed_out' };
   }
   async disconnectPap(sessionRef: string): Promise<void> {
+    for (const waiter of this.cooldownWaiters) if (waiter.context.sessionRef === sessionRef) waiter.controller.abort(new PapError('disconnected'));
     for (const controller of this.abortedSessions.get(sessionRef) ?? []) controller.abort();
     const ended = await this.store.transaction(state => { const session = state.sessions[sessionRef]; requirePap(session, 'disconnected'); const subject = this.subject(state, session.subjectRef); session.connected = false; session.generation++; return { subject, delegation: state.delegations[subject.ref] }; });
     if (ended.subject.mode === 'anonymous') {

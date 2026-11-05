@@ -22,7 +22,7 @@ export class FixtureHost implements PapIdentityHost {
   constructor(readonly clientBinding: Binding = binding) {}
   identityKid = 'identity-fixture';
   identity = makeKey(); keys = new Map<string, { key: ReturnType<typeof makeKey>; scope: string; descriptor: KeyRef }>();
-  operations = new Map<string, KeyRef>(); active = true; createCount = 0; sessionCount = 0;
+  operations = new Map<string, KeyRef>(); active = true; createCount = 0; sessionCount = 0; assertionCount = 0; dpopCount = 0; delegationCount = 0;
   async acquire(_binding: Binding, company: Company): Promise<PapSigningLease> {
     const check = () => requirePap(this.active, 'permission_denied');
     const create = async (scope: KeyScope, operationId: string, purpose: KeyRef['purpose']) => {
@@ -36,10 +36,10 @@ export class FixtureHost implements PapIdentityHost {
       assertActive: async () => check(),
       createDelegatedKey: (scope, operationId) => create(scope, operationId, 'pap_session'),
       createDpopKey: (scope, operationId) => create(scope, operationId, 'pap_dpop'),
-      issuePapDelegation: async (ref, scope, ttl) => { const key = get(ref, scope); const now = Math.floor(Date.now()/1000); return signed({ alg: 'ES256', typ: 'poppy-delegation+jwt', kid: this.identityKid }, { iss: this.clientBinding.clientId, cnf: { jwk: key.jwk }, iat: now, exp: now + ttl, jti: id('dlg') }, this.identity.privateKey); },
+      issuePapDelegation: async (ref, scope, ttl) => { const key = get(ref, scope); this.delegationCount++; const now = Math.floor(Date.now()/1000); return signed({ alg: 'ES256', typ: 'poppy-delegation+jwt', kid: this.identityKid }, { iss: this.clientBinding.clientId, cnf: { jwk: key.jwk }, iat: now, exp: now + ttl, jti: id('dlg') }, this.identity.privateKey); },
       signPapSessionRequest: async input => { const key = get(input.key, input.scope); this.sessionCount++; return signed({ alg: 'ES256', typ: 'poppy-session+jwt', kid: input.key.thumbprint, poppy_dlg: input.delegation }, { iss: input.clientId, aud: company.companyId, sid: input.sid, sub: input.sub, ...(input.agentId ? { agent_id: input.agentId } : {}), htm: input.httpMethod, htu: htu(input.httpUri), iat: Math.floor(Date.now()/1000), jti: id('req'), ...(input.accessToken ? { ath: sha256(input.accessToken) } : {}) }, key.privateKey); },
-      signDpopProof: async input => { const key = get(input.key, input.scope); return signed({ alg: 'ES256', typ: 'dpop+jwt', jwk: key.jwk }, { htm: input.httpMethod, htu: htu(input.httpUri), iat: Math.floor(Date.now()/1000), jti: id('dpop'), ...(input.accessToken ? { ath: sha256(input.accessToken) } : {}), ...(input.nonce ? { nonce: input.nonce } : {}) }, key.privateKey); },
-      signOAuthClientAssertion: async () => { check(); const now = Math.floor(Date.now()/1000); return signed({ alg: 'ES256', typ: 'JWT', kid: this.identityKid }, { iss: this.clientBinding.clientId, sub: this.clientBinding.clientId, aud: company.issuer, iat: now, exp: now+60, jti: id('ca') }, this.identity.privateKey); },
+      signDpopProof: async input => { const key = get(input.key, input.scope); this.dpopCount++; return signed({ alg: 'ES256', typ: 'dpop+jwt', jwk: key.jwk }, { htm: input.httpMethod, htu: htu(input.httpUri), iat: Math.floor(Date.now()/1000), jti: id('dpop'), ...(input.accessToken ? { ath: sha256(input.accessToken) } : {}), ...(input.nonce ? { nonce: input.nonce } : {}) }, key.privateKey); },
+      signOAuthClientAssertion: async () => { check(); this.assertionCount++; const now = Math.floor(Date.now()/1000); return signed({ alg: 'ES256', typ: 'JWT', kid: this.identityKid }, { iss: this.clientBinding.clientId, sub: this.clientBinding.clientId, aud: company.issuer, iat: now, exp: now+60, jti: id('ca') }, this.identity.privateKey); },
       retireTemporaryKey: async (ref, scope) => { get(ref, scope); this.keys.delete(ref.handle); },
     };
   }

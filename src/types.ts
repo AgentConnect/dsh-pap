@@ -37,6 +37,7 @@ export interface PapState {
   companies: Record<string, Company>; subjects: Record<string, Subject>; sessions: Record<string, Session>;
   delegations: Record<string, Delegation>; grants: Record<string, Grant>; transactions: Record<string, AuthTransaction>;
   nonces: Record<string, string>;
+  cooldowns: Record<string, { notBeforeMs: string; generation: number }>;
   accountSlots: Record<string, { subjectRef: string; epoch: number; signedOut: boolean }>;
   delegationAttempts: Record<string, { sequence: number; status: 'reserved' | 'issued' | 'failed' }>;
   retirements: Record<string, { subjectRef: string; key: KeyRef }>;

@@ -14,7 +14,7 @@ Git blob `01e9dc34bacb73ef0a740cc3bae77d82f0be0d37`.
 - 每个实际资源请求重新签 `Poppy-Session`，绑定实际 htm/htu，带账户 Token 时才有 ath。发现、描述和 OAuth 请求不携 Session；禁止调用者注入认证 Header；凭据重定向停止。
 - Direct Sign-In：显式用户入口、state、issuer、43 字符 S256 PKCE verifier、已发布 callback 校验、标准账户 Token、可选 RFC 9449 DPoP 和按 AS/资源分离的 nonce。
 - 独立 PAP account store：scope/resource 约束、refresh single-flight/CAS、轮换 Token 原子替换、丢回执标为 uncertain、退出撤销及 revocation_pending。持久 account slot epoch 同时约束登录事务、refresh 和发送前检查；退出取消 pending/exchanging 登录，迟到 Token 只保留撤销信息。并发资源调用会等待同一刷新代次。
-- `invalid_session` 停止，`session_ended` 新 sid 后最多重发一次，Token 错误最多刷新重发一次。网络超时或丢回执不自动重发副作用请求。429 保留有界 Retry-After 摘要。
+- `invalid_session` 停止，`session_ended` 新 sid 后最多重发一次，仅 GET/HEAD/OPTIONS 的 Token 错误可刷新后最多重发一次；副作用 API 的认证 challenge 不自动重放。网络超时或丢回执不自动重发副作用请求。429 持久保存 Retry-After fence，原请求不重放，后续显式请求在窗口前不签名或发送。
 
 Device 为后续独立阶段，当前返回 `unsupported_sign_in` 并且不广告。Browser Join、Mediated Sign-In、PS384、Web Bot Auth operator signature、自动账户合并均未实现。PAP 不复用 MCP machineToken、Mcp-Session-Id 或 0.2 Session grant。
 
@@ -105,3 +105,13 @@ npm run test:native-account-component -- /absolute/C/test/helpers/native-protoco
 `npm run test:keyring-container` 在唯一任务镜像中安装 libsecret-tools/gnome-keyring/dbus，使用真实 F 私有包，不安装宿主软件。运行阶段 network none、根文件系统只读、非 root、有限 tmpfs/资源和独立 DBus/XDG/control；密码只在 stdin/内存。已验证创建/读取、PapStore 加密、新 Node 进程恢复、daemon 重启、锁定拒绝、删除 item 后不重建/不改写既有密文，以及无明文回退。详见 `scripts/keyring-container/README.md`（源码内） 和 [验证记录](docs/verification.md)。
 
 这关闭了隔离容器内真实 Secret Service 的模块证据缺口；宿主仍没有配置该后端，原 `real_missing_backend_only` 结果保持。它不代表宿主 keyring 部署就绪，也不补齐产品 UI/E2E 或 registry 门槛。
+
+## HTTP 认证错误与持久冷却
+
+资源冷却按当前本地身份/owner Store 内的 Company+resource 隔离，OAuth endpoint 冷却按 Company+精确 AS issuer 隔离，二者即使同 origin 也不共用窗口。Retry-After 支持 delta-seconds 和 HTTP-date；绝对截止时间以精确整数字符串保存在加密状态中，不截短到 300 秒。缺失/非法值使用本地一秒 fence，不伪造远端 TTL。较短窗口可等待，较长窗口返回 `PapError.retryAfterSeconds` 并保持 fence；超大整数用十进制字符串返回。Host engine 的 `inlineCooldownWaitMs` 为 0–5000ms，默认1500ms，只约束本次愿意等待多久，不缩短服务器窗口。
+
+close、断开和账户退出可取消等待；这些动作不清除共享 fence。等待后重新检查当前 scope、账户 epoch、连接、generation 和 C lease。实际发送的持锁 callback 在等待 Store 锁/secret resolver 后再次检查真实 C Session/DPoP lease，随后同步完成本地 CAS 并启动 HTTP，不能使用撤销后的旧签名发出请求。
+
+401/403 优先解析标准 Bearer/DPoP WWW-Authenticate，支持多 challenge、quoted comma/escape，重复或歧义参数拒绝。`PapError.authHint` 只可能包含固定 scheme、当前 Company 已广告的合法 scope 和当前 resource 的精确标准 PRM URL；realm、error_description、任意 URL/query 或远端秘密不会进入提示/日志。提示不触发 metadata fetch、resource 切换、Token 请求或扩权。非标准 Session/旧登录错误不能通过 OAuth challenge 触发新 sid 或副作用重放。
+
+定向回归入口：`npm run test:p22`。该入口仅 owning client/storage/HTTP 检查，不运行 System Test 或产品 E2E。

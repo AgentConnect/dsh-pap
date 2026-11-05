@@ -110,7 +110,7 @@ test('F-T08 redirect, 429, revoked permission and disconnect do not change proto
   await assert.rejects(f.client.dispatchPap(f.sessionRef,{url:'https://shop.example/api/cart'}),fails('redirect_blocked'));
   f.transport.override = url => url.includes('/api/cart') ? jsonResponse(url,{},429,{'retry-after':'25'}) : undefined;
   await assert.rejects(f.client.dispatchPap(f.sessionRef,{url:'https://shop.example/api/cart'}),error=>error instanceof PapError&&error.code==='rate_limited'&&error.retryAfterSeconds===25);
-  f.host.active=false; await assert.rejects(f.client.dispatchPap(f.sessionRef,{url:'https://shop.example/api/cart'}),fails('permission_denied'));
+  f.host.active=false; const afterCooldown=new PapClient({...f.options,clock:()=>Date.now()+26000},f.transport); await assert.rejects(afterCooldown.dispatchPap(f.sessionRef,{url:'https://shop.example/api/cart'}),fails('permission_denied'));
   await f.client.disconnectPap(f.sessionRef); await assert.rejects(f.client.dispatchPap(f.sessionRef,{url:'https://shop.example/api/cart'}),fails('disconnected'));
 });
 test('F-T10 Device remains a separately unimplemented lane and is never advertised',async t=>{const f=await setup(t,'account'); assert.deepEqual((await f.client.getPapStatus()).supportedSignIn,['direct']);await assert.rejects(f.client.startSignIn(f.subjectRef,{method:'device',resource:'https://shop.example',scopes:['orders:read'],redirectUri:'https://agent.example/pap-callback',callbackMode:'handoff'}),fails('unsupported_sign_in'));});
