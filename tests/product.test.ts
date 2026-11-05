@@ -68,7 +68,8 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
     } }),
     bindProtocolConsumer(context: Context) { contexts.push(context); return protocol; },
   });
-  const spySecrets = { getEncryptionKey: async (namespace: string) => { namespaces.push(namespace); return secrets.getEncryptionKey(); }, getOrCreateEncryptionKey: async (namespace: string) => { namespaces.push(namespace); return secrets.getOrCreateEncryptionKey(); } };
+  let pauseKey: { entered(): void; gate: Promise<void> } | undefined;
+  const spySecrets = { getEncryptionKey: async (namespace: string) => { namespaces.push(namespace); const pause = pauseKey; pauseKey = undefined; if (pause) { pause.entered(); await pause.gate; } return secrets.getEncryptionKey(); }, getOrCreateEncryptionKey: async (namespace: string) => { namespaces.push(namespace); return secrets.getOrCreateEncryptionKey(); } };
   ctx.provide('papHost', { secrets: options.blockedSecrets ? { getEncryptionKey: async () => { throw new PapError('credential_unavailable'); }, getOrCreateEncryptionKey: async () => { throw new PapError('credential_unavailable'); } } : spySecrets, transport });
   ctx.provide('tools', { register(definition: any) { tools.set(definition.name, definition); } });
   ctx.provide('typert', { register() { return () => {}; } });
@@ -82,7 +83,9 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   const execute = async (name: string, args: unknown = {}) => tools.get(name).execute(args, { agent: {}, signal: new AbortController().signal });
   t.after(async () => { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }); });
   return { root, ctx, loader, host, transport, service, manager, execute, tools, contexts, namespaces, config, select: async () => manager.manage({ action: 'identity/select', reference: binding.identityRef }),
-    setResponse(value: typeof response) { response = value; }, advanceProvider() { providerGeneration++; }, get counts() { return { registerCount, claimCount, disposedCallbacks }; } };
+    setResponse(value: typeof response) { response = value; }, advanceProvider() { providerGeneration++; },
+    pauseNextKeyRead() { let entered!: () => void; let release!: () => void; const start = new Promise<void>(resolve => entered = resolve); const gate = new Promise<void>(resolve => release = resolve); pauseKey = { entered, gate }; return { start, release }; },
+    get counts() { return { registerCount, claimCount, disposedCallbacks }; } };
 }
 async function connected(f: Awaited<ReturnType<typeof fixture>>) {
   value(await f.select()); const company = value(await f.manager.manage({ action: 'company/discover', domain: 'shop.example' }));
@@ -266,4 +269,15 @@ test('PAP product: explicit reselection fences an old engine response even for t
   const dispatch = engine.dispatchPap.bind(engine); engine.dispatchPap = async (...args) => { const response = await dispatch(...args); entered(); await gate; return response; };
   const request = f.execute('pap_request', { operationRef: operation.operationRef }); await start; value(await f.select()); release();
   error(await request, 'state_conflict'); value(await f.execute('pap_request', { operationRef: operation.operationRef }));
+});
+for (const surface of ['tool-status','tool-operations','user-status','user-operations'] as const) test(`PAP product: ${surface} rejects a Store read that resumes after actual Loader unload`, async t => {
+  const f = await fixture(t); await connected(f); const pause = f.pauseNextKeyRead(); t.after(pause.release);
+  const read = surface === 'tool-status' ? f.execute('pap_status') : surface === 'tool-operations' ? f.execute('pap_operations') : surface === 'user-status' ? f.manager.status() : f.manager.operations();
+  await pause.start; const entry = [...f.loader.entries()].find(item => item.options.name === PAP_CONSUMER)!;
+  await f.loader.update(entry.id, { disabled: true }); pause.release(); const result = await read;
+  assert.equal(result.ok, false); assert(!JSON.stringify(result).includes('ready')); assert(!JSON.stringify(result).includes('op_'));
+});
+test('PAP product: status rechecks actual C authority after a suspended protected-key read', async t => {
+  const f = await fixture(t); await connected(f); const pause = f.pauseNextKeyRead(); t.after(pause.release);
+  const status = f.execute('pap_status'); await pause.start; f.advanceProvider(); pause.release(); error(await status, 'provider_disposed');
 });

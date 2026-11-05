@@ -146,6 +146,12 @@ export class PapService extends Service {
   private async engine(): Promise<PapClient> {
     await this.ready; requirePap(!this.stopped, 'disconnected'); requirePap(this.client, 'not_configured'); await (await this.consumer()).assertActive(); return this.client;
   }
+  private assertCurrentEngine(engine: PapClient): void { requirePap(!this.stopped, 'disconnected'); requirePap(!this.changing && this.client === engine, 'state_conflict'); }
+  private async catalog(enabledOnly: boolean, check: () => void): Promise<object[]> {
+    check(); const engine = await this.engine(); const state = await engine.store.read();
+    check(); this.assertCurrentEngine(engine); await (await this.consumer()).assertActive(); check(); this.assertCurrentEngine(engine);
+    return publicOperations(state, enabledOnly);
+  }
   async start(): Promise<void> { await this.ready; }
   stop(): void { if (this.stopped) return; this.stopped = true; this.client?.close(); this.hostConsumer?.dispose(); }
   async getStatus(includeManagementHints = false): Promise<object> {
@@ -153,8 +159,9 @@ export class PapService extends Service {
     requirePap(!this.stopped, 'disconnected');
     if (this.config.enabled !== true) return { state: 'disabled' };
     if (!this.client) return { state: this.lastError === 'credential_unavailable' ? 'credential_unavailable' : 'unconfigured', ...(this.lastError ? { error: this.lastError } : {}) };
-    await (await this.consumer()).assertActive();
-    const state = await this.client.store.read();
+    const engine = this.client; await (await this.consumer()).assertActive();
+    const state = await engine.store.read();
+    this.assertCurrentEngine(engine); await (await this.consumer()).assertActive(); this.assertCurrentEngine(engine);
     return { state: 'ready', identity: this.selected, supportedSignIn: ['direct'],
       ...(includeManagementHints ? { authenticationHints: [...this.authHints].map(([operationRef, hint]) => ({ operationRef, ...hint })) } : {}),
       companies: Object.values(state.companies).map(value => ({ companyRef: value.ref, name: value.name, authMode: value.authMode, scopes: value.scopes })),
@@ -166,21 +173,26 @@ export class PapService extends Service {
   acquireManagement(context: Context): { status(): Promise<ProductResult>; operations(): Promise<ProductResult>; execute(input: unknown): Promise<ProductResult> } {
     this.assertInstalled(context, PAP_MANAGER); const check = () => this.assertInstalled(context, PAP_MANAGER);
     return Object.freeze({
-      status: () => publicResult(async () => { check(); return this.getStatus(true); }),
-      operations: () => publicResult(async () => { check(); return publicOperations(await (await this.engine()).store.read()); }),
-      execute: input => publicResult(async () => { check(); const parsed = managementRequestSchema.safeParse(input); requirePap(parsed.success, 'permission_denied'); return this.manage(parsed.data, check); }),
+      status: () => publicResult(async () => { check(); const result = await this.getStatus(true); check(); return result; }),
+      operations: () => publicResult(() => this.catalog(false, check)),
+      execute: input => publicResult(async () => {
+        check(); const parsed = managementRequestSchema.safeParse(input); requirePap(parsed.success, 'permission_denied'); const previous = this.client;
+        const result = await this.manage(parsed.data, check); check();
+        if (parsed.data.action !== 'identity/select' && previous) { this.assertCurrentEngine(previous); await (await this.consumer()).assertActive(); check(); this.assertCurrentEngine(previous); }
+        return result;
+      }),
     });
   }
   /** Agent capability contains only approved local operation references. */
   acquireTools(context: Context): { status(): Promise<ProductResult>; operations(): Promise<ProductResult>; request(input: unknown, signal?: AbortSignal): Promise<ProductResult> } {
     this.assertInstalled(context, PAP_TOOLS); const check = () => this.assertInstalled(context, PAP_TOOLS);
     return Object.freeze({
-      status: () => publicResult(async () => { check(); return this.getStatus(); }),
-      operations: () => publicResult(async () => { check(); return publicOperations(await (await this.engine()).store.read(), true); }),
+      status: () => publicResult(async () => { check(); const result = await this.getStatus(); check(); return result; }),
+      operations: () => publicResult(() => this.catalog(true, check)),
       request: (input, signal) => publicResult(async () => {
         check(); const parsed = operationRequestSchema.safeParse(input); requirePap(parsed.success, 'permission_denied');
         const engine = await this.engine(); const snapshot = await engine.store.read(); const prepared = prepareOperation(snapshot, parsed.data);
-        const checkRequest = () => { check(); requirePap(!this.changing && this.client === engine, 'state_conflict'); };
+        const checkRequest = () => { check(); this.assertCurrentEngine(engine); };
         checkRequest();
         const sentSecrets = new Set(privateValues(snapshot));
         try {
