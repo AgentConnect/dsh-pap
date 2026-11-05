@@ -2,6 +2,8 @@ import type { AsMetadata, Binding, Company, IdentityRef, KeyRef, KeyScope, Publi
 
 /** Same-process Host capability. Never expose through Remote or tools. */
 export interface PapSigningLease {
+  /** Actual C target object, Host-only; never serialized or accepted from user input. */
+  readonly targetRef?: object;
   getOAuthClientIdentity(): Promise<{ clientId: string; alg: string; kid: string; publicJwk?: PublicJwk; redirectUris?: string[] }>;
   createDelegatedKey(scope: KeyScope, operationId: string): Promise<KeyRef>;
   issuePapDelegation(key: KeyRef, scope: KeyScope, ttlSeconds: number): Promise<string>;

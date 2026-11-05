@@ -4,7 +4,12 @@ export interface Binding { readonly identityRef: IdentityRef; readonly ownerRef:
 export interface PublicJwk { kty: 'EC'; crv: 'P-256'; x: string; y: string }
 export interface KeyScope { owner: string; company_id: string; user_id: string; account_slot?: string }
 export interface KeyRef { handle: string; purpose: 'pap_session' | 'pap_dpop'; generation: number; public_jwk: PublicJwk; thumbprint: string }
-export interface Route { method: string; template: string; resource: string }
+export interface Route {
+  method: string; template: string; resource: string;
+  channel?: 'openapi' | 'mcp' | 'poppy';
+  parameters?: { name: string; in: 'path' | 'query'; required: boolean }[];
+}
+export interface ProductOperationApproval { companyRef: string; method: string; template: string; resource: string; sessionRef: string; scopes: string[]; generation: number }
 export interface AsMetadata {
   issuer: string; authorization_endpoint?: string; token_endpoint: string; revocation_endpoint?: string;
   grant_types_supported: string[]; token_endpoint_auth_methods_supported?: string[];
@@ -41,6 +46,8 @@ export interface PapState {
   accountSlots: Record<string, { subjectRef: string; epoch: number; signedOut: boolean }>;
   delegationAttempts: Record<string, { sequence: number; status: 'reserved' | 'issued' | 'failed' }>;
   retirements: Record<string, { subjectRef: string; key: KeyRef }>;
+  /** User-managed operation permissions; protected by the same encrypted store and lock. */
+  product?: { operations: Record<string, ProductOperationApproval> };
 }
 export interface Operation { url: string; method?: string; headers?: Record<string, string>; body?: string; resource?: string; scopes?: string[]; idempotencyKey?: string }
 export interface HttpResponse { status: number; headers: Record<string, string>; body: Uint8Array; url: string }

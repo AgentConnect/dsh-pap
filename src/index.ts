@@ -11,5 +11,7 @@ export type { HostSecretStore, CallbackHandoff, PapIdentityHost, PapSigningLease
 
 export { DeviceCallbackHandoff } from './callback-handoff.js';
 export type { DeviceManagementOperations, CallbackManagementOperation, CallbackRegistration, CallbackClaim, CallbackRegistrationResult, CallbackClaimResult, RegisterCallbackOperation, ClaimCallbackOperation } from './callback-handoff.js';
-export { name, inject, apply, PapService, PapUserManagement } from './plugin.js';
+export { name, inject, apply, PapService } from './plugin.js';
+export type { PapPluginConfig, PapHostServices } from './plugin.js';
+export type { PapHostConsumer, PapManagementRequest, PapOperationRequest, ProductResult } from './product-api.js';
 export { KeyringSecretStore } from './keyring.js';

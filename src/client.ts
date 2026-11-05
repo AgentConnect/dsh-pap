@@ -16,6 +16,8 @@ function secureEqual(a: unknown, b: string): boolean {
 const protectedHeaders = new Set(['authorization','dpop','poppy-session','host','cookie','proxy-authorization','content-length','connection','transfer-encoding']);
 interface WaitContext { subjectRef: string; sessionRef?: string; accountSlot?: string; accountEpoch?: number; allowSignedOut?: boolean; grantRef?: string; grantGeneration?: number; transactionRef?: string }
 interface AccountRequestControl { purpose?: 'token'|'revoke'; scopes: readonly string[]; accountEpoch?: number; sessionRef?: string; grantRef?: string; grantGeneration?: number; transactionRef?: string }
+/** Same-process permission fence, never a wire input. */
+export interface PapDispatchControl { signal?: AbortSignal; assertAllowed?: (state: PapState) => void }
 function authenticationError(code: string | undefined, hint?: PapAuthHint): PapError {
   if (code === 'insufficient_scope' || code === 'invalid_scope' || code === 'invalid_target' || code === 'invalid_client' || code === 'invalid_token' || code === 'invalid_dpop_proof' || code === 'unauthorized_client') return new PapError(code, undefined, hint);
   if (code === 'invalid_grant') return new PapError('reauthorization_required', undefined, hint);
@@ -195,7 +197,7 @@ export class PapClient {
       } catch { /* Keep the durable retry reference; an old Delegation is never selected again. */ }
     }
   }
-  async dispatchPap(sessionRef: string, operation: Operation): Promise<HttpResponse> {
+  async dispatchPap(sessionRef: string, operation: Operation, control: PapDispatchControl = {}): Promise<HttpResponse> {
     // Freeze all caller inputs before any await, including the exact body and business idempotency key.
     const frozen = structuredClone(operation);
     const headers: Record<string,string> = {};
@@ -204,7 +206,9 @@ export class PapClient {
     let retriedSession = false; let retriedToken = false; let retriedNonce = false;
     let accountContext: { slot: string; epoch: number } | undefined;
     for (;;) {
+      requirePap(!control.signal?.aborted, 'disconnected');
       const initial = await this.store.read(); const initialSession = this.session(initial, sessionRef); const initialSubject = this.subject(initial, initialSession.subjectRef); const initialCompany = this.company(initial, initialSubject.companyRef);
+      control.assertAllowed?.(initial);
       const initialMethod = (frozen.method ?? 'GET').toUpperCase(); const initialUrl = httpsUrl(frozen.url).href;
       const initialRoute = initialCompany.routes.find(route => route.method === initialMethod && matchedRoute(route.template, initialUrl)); requirePap(initialRoute, 'unsafe_destination');
       const waitContext: WaitContext = { subjectRef: initialSubject.ref, sessionRef, accountSlot: initialSession.accountSlot, accountEpoch: initialSession.accountSlot ? initial.accountSlots[initialSession.accountSlot]?.epoch : undefined };
@@ -234,7 +238,7 @@ export class PapClient {
         }
       } else requirePap((frozen.scopes?.length ?? 0) === 0, 'reauthorization_required');
       const cooldownKey = resourceCooldownKey(company.companyId, route.resource);
-      const allowed = (current: PapState) => { this.assertWaitActive(current, waitContext); assertCooldownElapsed(current, cooldownKey, this.clock()); };
+      const allowed = (current: PapState) => { requirePap(!control.signal?.aborted, 'disconnected'); control.assertAllowed?.(current); this.assertWaitActive(current, waitContext); assertCooldownElapsed(current, cooldownKey, this.clock()); };
       const lease = await this.lease(subject, 'pap_session', route.resource, url);
       const delegation = await this.delegation(subject, lease, false, allowed);
       await this.store.transaction(current => allowed(current));
@@ -259,6 +263,9 @@ export class PapClient {
       }
       await lease.assertActive();
       const controller = new AbortController();
+      const cancel = () => controller.abort();
+      control.signal?.addEventListener('abort', cancel, { once: true });
+      if (control.signal?.aborted) controller.abort();
       const active = this.abortedSessions.get(sessionRef) ?? new Set(); active.add(controller); this.abortedSessions.set(sessionRef, active);
       let response: HttpResponse;
       try {
@@ -274,7 +281,7 @@ export class PapClient {
           return response;
         });
       } catch (error) { if (error instanceof PapError) throw error; throw new PapError('request_uncertain'); }
-      finally { active.delete(controller); if (active.size === 0) this.abortedSessions.delete(sessionRef); }
+      finally { control.signal?.removeEventListener('abort', cancel); active.delete(controller); if (active.size === 0) this.abortedSessions.delete(sessionRef); }
       if (response.status >= 300 && response.status < 400) throw new PapError('redirect_blocked');
       if (response.status === 429) { const limited = await this.store.read(); throw cooldownError(limited, cooldownKey, this.clock()); }
       const failure = protocolFailure(response, company, route.resource, grant?.tokenType); const error = failure.code;

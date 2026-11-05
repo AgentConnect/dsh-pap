@@ -11,7 +11,11 @@
     ".": "./lib/index.js",
     "./host": "./lib/host.js",
     "./plugin": "./lib/plugin.js",
-    "./host-secrets": "./lib/host-secrets.js"
+    "./host-secrets": "./lib/host-secrets.js",
+    "./management-remote": "./lib/management-remote.js",
+    "./remote": "./lib/remote.js",
+    "./tools": "./lib/tools.js",
+    "./product-api": "./lib/product-api.js"
   },
   "files": [
     "lib",
@@ -29,20 +33,29 @@
     "test:native-account-component": "tsx scripts/native-frontvia-component.ts",
     "test:keyring-container": "node scripts/keyring-container/run.mjs",
     "test:p22": "npm run typecheck && tsx --test tests/cooldown-challenge.test.ts tests/client.test.ts tests/network-store.test.ts",
-    "test:relay-native-account-component": "tsx scripts/relay-native-frontvia-component.ts"
+    "test:relay-native-account-component": "tsx scripts/relay-native-frontvia-component.ts",
+    "test:product": "tsx --test tests/product.test.ts"
   },
   "dependencies": {
-    "proper-lockfile": "4.1.2"
+    "proper-lockfile": "4.1.2",
+    "zod": "4.6.2"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "4.0.2"
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-typert-registry": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.5-rc.2"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.3",
+    "@deepseek-ai/dsh-typert-protocol": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-typert-registry": "0.1.5-rc.2",
     "@types/node": "24.3.0",
     "@types/proper-lockfile": "4.1.4",
     "tsx": "4.20.6",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "zod": "4.6.2"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -50,6 +63,17 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-typert-registry": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
     }
   }
 }

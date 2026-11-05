@@ -65,6 +65,7 @@ export class ProtocolIdentityHost implements PapIdentityHost {
       keys.set(JSON.stringify([scope, key.handle, key.generation]), key); return serializable(key);
     };
     const lease: PapSigningLease = {
+      targetRef: raw.targetRef,
       getOAuthClientIdentity: async () => { const identity = await raw.getOAuthClientIdentity(); return { clientId: identity.clientId, alg: identity.algorithm, kid: identity.keyId, publicJwk: identity.publicJwk, redirectUris: identity.redirectUris }; },
       assertActive: () => raw.assertActive(),
       createDelegatedKey: (scope, operationId) => create(scope, operationId, 'pap_session'),

@@ -1,8 +1,10 @@
-# Requires the local C identity/native provider and the Host's papHost secrets/handoff service.
+# Explicit opt-in configuration is owned by the profile Host. No implicit environment binding.
 - insert:
     - id: pap
       name: '@agentconnect/dsh-pap/plugin'
       config:
-        stateRoot: !!js process.env.DSH_PAP_STATE_ROOT
-        binding: !!js JSON.parse(process.env.DSH_PAP_IDENTITY_BINDING ?? 'null')
-        policyRef: !!js process.env.DSH_PAP_POLICY_REF
+        enabled: false
+    - id: pap-manager
+      name: '@agentconnect/dsh-pap/management-remote'
+    - id: pap-tools
+      name: '@agentconnect/dsh-pap/tools'

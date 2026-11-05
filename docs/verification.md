@@ -121,3 +121,23 @@ G独立核对 metadata/JWKS各11GET，原始bytes SHA分别 `1ca906fee0216195d57
 本轮没有重复 full owner suite、System Test、产品E2E或依赖发布检查。测试脚本已typecheck并实际运行，后续只提交脚本/说明，生产src/lock继续与7325同字节。
 
 H/G/E 的 P01/P28 联合已完成并释放 F HEAD guard：原生工具结果结构化归档为 `cimd-oauth-server/ts/.local/verification/shared-protocol-final-20261106.json`，SHA `fcd4f93190bf787a1e7e93caf4455b0bc3b71f99b2c6a64cce74fa3fc2392ea9`。实际绑定 F7325/Daf6/C helperd193/nativee2：PAP NoAS真实C/A→HTTPS、Token0，关闭engine/实际PAP Context/lease/server，随后同DID/CIMD在新独立MCP Context完成陌生client CC双工具、真实等待8.5s DB expiry后再次CC双工具，Token2且均CC、无callback/authorize/refresh。PG owner与私有/tmp/cimd-pg.rvezGbFr已EXIT删除。该结果来自已完成tool25276 stdout归档与guard后source复核，不是本轮F另跑，也不是新test-only HEAD的执行来源。
+
+## PAP installed Host 管理与受限工具（新增候选）
+
+本轮针对只读产品接入审计发现的缺口，仅修改 F 仓库。bundle 默认 disabled，不再隐式从 DSH_PAP_* 环境变量取得 binding；enabled 但配置不全时返回 unconfigured，正常装载且没有网络或 key 创建。实际插件 Context 固定为 `@agentconnect/dsh-pap/plugin`；独立用户 Remote 与工具 row 分别为 `@agentconnect/dsh-pap/management-remote`、`@agentconnect/dsh-pap/tools`，通过真实 Loader entry/fiber 校验。用户管理不再依赖调用者提供的 `assertAuthorizedUserAction` 空泛回调。产品 Host 必须将 Typert 管理 namespace 限定在真实已认证用户 Gateway；本模块没有新建公开 HTTP listener 或把管理能力注册成模型工具。
+
+新增 `PapHostConsumer` 是 C 真实安全 factory 的结构合同，不是 F 自实现授权：F 仅给出实际 installed Context、三字段身份 reference 和 Host 固定 policyRef；binding/HTTPS redirect 从当前 C publication/policy 得出。callback 逐次从加密事务还原 Company/resource/scope，先走真实 ProtocolIdentityHost 获取 C opaque target，再索取 register/claim 闭合 capability 并在 finally dispose。F 没有 DeviceAccess、NativeStore 或 generic HTTP/signer 入口。C factory 在本轮 F 单位测试中是明确替身；未把此前直接 new PapClient 的真实 native 结果当成此新入口的 C/A 集成通过。真实 C factory owner 通知 ready 后才补必要模块验证。
+
+模型只注册 `pap_status`、`pap_operations`、`pap_request`。用户先通过管理 Remote 选择 identity、发现 Company、创建 Session、显式启用本地 operation；工具只提交 operationRef 与已声明 path/query/JSON body，不能自报 URL/method/Header/resource/scopes/account/verified metadata。权限存入加密 Store，每次启用有新 generation；签名期间撤销再启用同一操作，旧调用在最终持锁 guard 拒绝，实际 HTTP 为零。工具不自动发起账户登录或 browser/callback action。标准 challenge 的安全 PRM/scope 提示仅在用户 status 出现，不把 URL/远端描述送给工具。
+
+Secret Store 复用真实 KeyringSecretStore；namespace 额外隔离 PAP purpose 与规范化 profile stateRoot 摘要。实际状态 key 仍为 OS secret store 产生的独立随机32bytes，不从身份私钥或普通 credentials/env 派生。可选受信 papHost.secrets 支持其他平台；后端不可用/锁定/既有 item 丢失继续 credential_unavailable，没有明文、RootKey 或 env fallback。既有 SecretService 容器9项仍只证明其对应源码和容器平台，不能宣称宿主已配；此次 keyring.ts/store.ts/host-secrets.ts 的生产密钥/密文实现未改。
+
+实际定向验证：
+
+- `npm run typecheck && npm run build && npx tsx --test tests/product.test.ts`：12/12。正式 registry `@deepseek-ai/cordis-plugin-loader@1.0.3` 入口与真实 Cordis 生命周期；C/publication/callback backend 和加密 root key 为单位替身。覆盖 disabled/unconfigured、精确 installed caller、仅用户管理、NoAS Token0、路径/URL/Header/query 拒绝、Direct target handoff、秘密不进工具、错误脱敏、权限 ABA race、Loader 重启恢复、工具禁用、profile namespace、blocked secrets、challenge 提示分离。
+- 较早受影响回归 `npx tsx --test tests/product.test.ts tests/client.test.ts tests/cooldown-challenge.test.ts`：55/55（当时 product10项）；新增2项后仅复跑 product12，不将重叠次数累加成新整轮57。没有跑其他全量或 System/E2E。
+- `npx tsx scripts/tools-registry-component.ts <Desktop已安装dsh-tools/lib/index.js>`：真实 `@deepseek-ai/dsh-tools@0.1.5-rc.2` 注册三工具并经 ToolRuntime.execute 执行 disabled status、拒绝任意URL、未配置 operations。实际入口 SHA-256 `aaba52bf5d0149355407642b3965c06977d1e9143f5c61bc19429abbe6a11c5d` 前后相同；systemPrompt 仅替代注册 seam，无 LLM、Company、credentials 或 native 验收声明。
+
+依赖诊断纠正：起初误读 `lib/index.d.ts` 路径（实际为 `lib/types/index.d.ts`）并被 rg 默认忽略 lib 的结果误导，曾误报 registry Loader 缺入口。Root 与 owner 重新核对正式包 lib/index.js 存在、SRI一致；测试已完全改为正式包入口，删除源码编译辅助与所有 NoCheck 绕行。lock 虽来自 mirror，SRI `sha512-YNcHiH7TRFrgnRbQU7qdS1spABUFFHg04QpB9DdboPEjgKLTFfeEAvr6Y7qll3/nGgqywDQdk1tYshqKO0p1WQ==` 与 primary 制品逐字节相符。安装 dsh-tools dev 依赖曾因 ^rc2 解析到 rc3 的 peer 冲突停止，没有 force；运行时 peer仍固定rc2，实际 registry检查复用 Desktop 安装产物，不修改其依赖。
+
+此候选补齐 F 管理/工具 Host 源码，不代表 Desktop 默认 bundle/vendor/settings 已接入。Desktop/C/D 由对应 owner 修改；实际 Company 业务目标尚未决定时保留配置，不新造默认 Company。C factory 全链、真实产品 UI/启用流程、宿主 keyring 配置、System/E2E 和发行门槛分别保留其待验范围。

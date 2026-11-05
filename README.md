@@ -20,37 +20,48 @@ Device 为后续独立阶段，当前返回 `unsupported_sign_in` 并且不广�
 
 ## Host 接入
 
-`@agentconnect/dsh-pap/plugin` 提供 Cordis `pap` 服务。依赖当前任务 C 真实实现的 `anpIdentity.bindProtocolConsumer(ctx)` 和 Host 的 `papHost` 服务。`ProtocolIdentityHost` 直接调用 C 的 `registerValidatedTarget`、opaque scope/key API 和 `restorePapKey`，不提供 native 绕行。
+`@agentconnect/dsh-pap/plugin` 提供实际 Cordis `pap` 服务；bundle 同时挂载用户管理 `./management-remote` 和模型工具 `./tools`。默认 `enabled: false`，没有 Company、identity 或 policy 时不执行网络发现、创建凭据或签名。用户仍可读取 disabled/unconfigured 状态。启用需要 Host 的明确 profile 配置，不再读取 `DSH_PAP_*` 环境变量或接受自报 binding：
 
-```ts
-import { PapUserManagement } from '@agentconnect/dsh-pap/plugin';
-
-// Run only inside an installed, trusted Host plugin Context.
-const manager = new PapUserManagement(ctx.pap.engine, {
-  assertAuthorizedUserAction() {
-    authenticatedManagementSession.assertUserInitiated();
-  },
-});
-const company = await manager.discover('company.example');
-const subject = await manager.createUser(company.companyRef);
-const session = await manager.openSession(subject.subjectRef);
+```yaml
+- id: pap
+  name: '@agentconnect/dsh-pap/plugin'
+  config:
+    enabled: true
+    stateRoot: /absolute/profile/pap
+    policyRef: approved-c-policy-id
+    keyringService: org.agentconnect.dsh-pap
 ```
 
-Host 配置需明确指定：绝对 `stateRoot`、`binding={identityRef,ownerRef,clientId}` 和管理端预批准的 `policyRef`。`cordis.patch.yml` 从 `DSH_PAP_STATE_ROOT`、`DSH_PAP_IDENTITY_BINDING` 和 `DSH_PAP_POLICY_REF` 读取这些非秘密配置。应先安装 C 身份服务、A native provider 和 `papHost`，再安装本插件。
+C 的真实 Loader consumer 必须是精确 `@agentconnect/dsh-pap/plugin`。Host 在 C 管理面预批准相应身份、profile、target 和 scopes；Remote 只选择 `{storeId, identityId, did}`，不能提交 owner、client_id、policy、verified metadata 或 targetRef。F 捕获插件构造时的真实 Context；不会将随 Cordis Service 调用关联变化的 `this.ctx` 当作签名调用者。
 
-`papHost.secrets` 必须实现 `HostSecretStore`，将 32-byte 状态加密根密钥保留在 Host secret store。仓库提供 Linux Secret Service 的 `KeyringSecretStore` 与可选 `./host-secrets` Cordis provider；使用 `secret-tool`，不写明文回退，不修改共享身份配置。其他系统由 Host 注入合规 secret store。既有加密文件对应的 secret 丢失时返回 `credential_unavailable`，不创建替代密钥。
+C 服务需实现 `bindProtocolConsumer(actualInstalledContext)` 与 `bindPapHostConsumer(actualInstalledContext)`。后者返回同进程 capability，`resolveBinding(identityRef, policyRef, profile)` 从当前已发布身份与政策得出 binding，`callbackManagementFor({identityRef,policyRef,targetRef})` 只返回 register/claim 两个受限操作。F 的 `ProtocolIdentityHost` 通过 C 真实 `registerValidatedTarget` 得到 opaque target，callback adapter 从加密事务重建相同 issuer/resource/scope 后取得该目标；不接受用户或模型提交的 opaque 引用。C factory 不可用时拒绝操作，不以组件 fixture 补位。
 
-默认生产网络使用 `SafeHttpsTransport`。`privateOrigins`、`portOverrides` 和自定义 DNS 仅供明确配置的隔离部署/组件测试；TLS 验证始终启用。映射仅改变 TCP 端口，Host 与 Session htu 保持逻辑 HTTPS URL。
+用户管理 namespace 为 `papManager`：`status()`、`operations()`、`manage(request)`。仅安装的 `@agentconnect/dsh-pap/management-remote` Context 可以取得管理 facade，部署必须把该 namespace 留在已认证的用户管理 Gateway，不接入 Agent 的 Remote/MCP 通用工具。闭合管理动作如下：
 
-`papHost.callbackHandoff` 可以使用 `DeviceCallbackHandoff`。其管理 driver 必须通过 B 的 exact-device API 添加当前 checkpoint 和受限 device proof，固定调用 `/user-service/v1/agent-clients/device/pap-callback-register` 或 `pap-callback-claim`。F 只提交 state/claim 的独立 SHA-256 hex 摘要，领取时提交独立 claim secret；verifier、PAP User/Agent ID、sid 和第三方 Token 均不交给 callback 服务。`callbackRef` 含领取秘密，只进入加密 Store。B 固定 callback URI 为 `/user-service/v1/pap-callback`，须先出现在实际已发布 CIMD。重定向地址不随交易变化。C 的 `configureManagedPublicationBackend(...)` 现在返回受限 `callbackManagement`，可直接传给 `new DeviceCallbackHandoff(configured.callbackManagement)`；其 `execute` 只有 register/claim 两个闭合 DTO overload，由 C 逐次核验真实 manager Context/device/identity，F 不提交 method、purpose 或 route。
+| action | 作用 |
+|---|---|
+| `identity/select` | 选择 C 已批准的已发布 identity reference |
+| `company/discover` | 按用户指定域执行安全发现；Company 不由包预造 |
+| `session/connect` / `session/disconnect` | 建立 signed-out 或明确 account slot 的 Session／断开 |
+| `operation/enable` / `operation/disable` | 将已发现 operation 绑定到用户选定的 Session 与 scope，或撤销 |
+| `account/sign-in` | 选定 operation/resource 和 scopes，使用实际已发布的 HTTPS callback 发起 Direct |
+| `account/collect` / `account/sign-out` | 原设备一次领取后换码／退出指定账户 slot |
 
-独立 loopback lane 必须显式配置并发布：仅 PAP account 的 `http://127.0.0.1:<port>/<path>` 或 `http://[::1]:<port>/<path>`，端口为显式 1–65535 十进制且无前导零；禁止 localhost、其他 127 地址、userinfo、query、fragment 和路径 dot segment。Host 持有实际本机 listener，运行时仅按 RFC 8252 忽略已发布 loopback URI 的端口差异。它不能进入 B 的 HTTPS relay register，不是 relay 失败后的回退；公开 CIMD/JWKS/发现/业务 URL 仍只接受 HTTPS。共同正负向向量位于 `tests/vectors/pap-account-redirects.json`。
+`account/sign-in` 的授权 URL 只返回给上述用户管理调用，需由真实用户 UI 打开。state、code、PKCE、callbackRef、claim secret、Token、key handle 不进入模型工具。此包提供管理 Remote 合同，不包含产品 settings 界面；Desktop owner 负责 UI 和 profile 的最终装入。
 
-`PapUserManagement` 是 Host 用户管理适配器，调用方必须检查真实用户会话。其授权 URL 只交给用户 UI。不要将 `engine`、`store`、signer lease、callbackRef 或管理方法注册成可由模型任意调用的 Remote。此包尚未包含产品 Web 界面或其 E2E。
+模型只有 `pap_status`、`pap_operations`、`pap_request` 三个工具。`pap_request` 输入只含本地 `operationRef`、已声明 path/query 参数及可选 JSON body，不接受 URL、method、Header、resource、scopes、account slot 或认证 metadata。method/destination/resource/session 来自本地已发现描述与用户授权。每次启用产生新的持久授权 generation，撤销后重新启用也不能让旧的在途调用越过发送前 fence。操作输出只给有界业务 JSON／状态，不透传响应 Header，并遮盖凭据字段。当前工具是 HTTP operation adapter；MCP 描述不会被当成已经实现的 PAP MCP transport，机器 MCP 不作 PAP 回退。
+
+状态 key 的 namespace 包含 PAP purpose、规范化 profile stateRoot 摘要以及 identity/owner/client binding 摘要；不同 profile 不复用同一 item。移动 profile 目录需要受控迁移其 protected item，不能只拷密文后创建新 key。状态根密钥默认使用真实 Linux Secret Service 的 `KeyringSecretStore`，不写明文或 env/RootKey fallback。缺少 `secret-tool`、后端锁定或既有 item 丢失时返回 `credential_unavailable`。可由受信同进程 `papHost.secrets` 注入其他 OS 的合规 `HostSecretStore`；该接口必须支持原子的 32-byte key 创建，不能把普通 credentials YAML 当成等价保护。可选 `./host-secrets` provider 仅供应 secrets；callback driver 一律从 C 目标绑定 factory 获取。既有密文对应 item 丢失时不会生成替代 key。
+
+生产网络默认 `SafeHttpsTransport`。受信 Host 的 `papHost.transport` 仅用于显式部署连接策略和组件验证，Remote/Tools 不能覆盖。`privateOrigins`、`portOverrides` 和自定义 DNS 仅适用于明确配置的隔离部署/组件；TLS 始终验证，连接映射只改变 TCP 端口，Host 与 Session htu 保持逻辑 URL。
+
+账户 callback 固定为当前实际发布 CIMD 中的 HTTPS URI。F 不取得管理 DeviceAccess，C 保留 exact-device credential/checkpoint/proof；只提交 state/claim 的独立 SHA-256 摘要与一次领取 secret。verifier、PAP User/Agent ID、sid、第三方 Token 均不交给 callback 服务，完整领取引用只在加密 Store。C 逐次检查当前调用者、政策、publication、provider、manager 以及目标 issuer/resource。
+
+底层 Host engine 保留显式独立 loopback lane（127.0.0.1 或 [::1] literal、合法显式 port、固定 path、无 query/fragment/userinfo/dot segment），它与默认 HTTPS handoff 分开，不能作为后者失败后的回退。本产品管理 adapter 首先只提供默认 HTTPS handoff，其他 lane 不广告为可用 UI。
 
 ## 本地状态与生命周期
 
-`pap-state.enc` 以 AES-256-GCM 加密，AAD 绑定 schema 和 identity/owner/client 命名空间；目录 0700、文件 0600。跨进程锁内使用 fsync + rename 原子提交；公开映射、Delegation、Token、PKCE 和 callback 领取状态均不明文落盘。状态目录备份与 Host secret store 备份应分别保管。Keyring provider 的 locksRoot 须使用独立目录，不能与 PAP stateRoot 使用同一个锁目录。
+产品将 Company/Session/operation 授权保存在每个 identity binding 独立目录；`selected-identity.json` 仅保存三字段公开 reference（0600、原子替换），每次恢复仍需 C 重新批准 binding。`pap-state.enc` 以 AES-256-GCM 加密，AAD 绑定 schema 和 identity/owner/client 命名空间；目录 0700、文件 0600。跨进程锁内使用 fsync + rename 原子提交；公开映射、Delegation、Token、PKCE 和 callback 领取状态均不明文落盘。状态目录备份与 Host secret store 备份应分别保管。Keyring provider 的 locksRoot 须使用独立目录，不能与 PAP stateRoot 使用同一个锁目录。
 
 恢复后重新经 C 获取目标许可并复核 key handle；持久 handle 本身不授予签名权。中断的 refresh 标为 uncertain，换码中断要求重新授权。委托默认一小时且校验最大二十四小时；自动/显式轮换保持 User ID/sid，并保存旧 key 的停用重试引用。每次 key 创建先持久预留 attempt；创建回执未知时复用原幂等 operation，已停用的失败 attempt 则不会再用；退休未确认时先完成清理再创建下一把 key。外部 Company 可缓存 Delegation 到 exp，本地停止签名不等于立即全网撤销。
 
@@ -66,7 +77,7 @@ npm run build
 npm pack --ignore-scripts --pack-destination .artifacts
 ```
 
-生产依赖只含固定 `proper-lockfile@4.1.2`；JOSE 验证使用 Node crypto。Cordis 固定 `4.0.2`；工具版本与 registry integrity 在 package-lock.json 固定。C/A 的新 PAP API 尚未发布到 registry，因此本阶段依赖实际 Host capability 结构绑定，不能宣称已通过新 API 的 registry 安装验证或正式发行门槛。此阶段不将未发布本地源码写作正式 SDK lock 来源。
+生产依赖固定 `proper-lockfile@4.1.2` 和 `zod@4.6.2`（严格管理 DTO）；JOSE 验证使用 Node crypto。Cordis 固定 `4.0.2`，可选 Host peer 为 typert/tools `0.1.5-rc.2`；依赖 integrity 在 package-lock.json 固定。C/A 的新 PAP API 尚未发布到 registry，因此本阶段依赖实际 Host capability 结构绑定，不能宣称已通过新 API 的 registry 安装验证或正式发行门槛。此阶段不将未发布本地源码写作正式 SDK lock 来源。
 
 `npm test` 是本仓库单位/隔离组件检查，不启动产品 E2E、System Test 或远程部署。`tests/fixture.ts` 的 in-memory ECDSA custody 仅供测试，和生产 C/A 路径分开。`tests/vectors/local-signer-v2.json` 来自 A 的真实本地 native 公有测试向量，独立 Node 验签；没有私钥。它证明 wire 兼容，不替代实际 C/A Host 接入。
 

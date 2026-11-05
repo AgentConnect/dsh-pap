@@ -103,7 +103,7 @@ export class PapDiscovery {
         if (api.type === 'mcp') {
           // MCP target metadata is checked independently; an account token targets the exact MCP URL.
           await serviceResource(apiUrl, true);
-          routes.push({ method: 'POST', template: apiUrl, resource: apiUrl }, { method: 'GET', template: apiUrl, resource: apiUrl }, { method: 'DELETE', template: apiUrl, resource: apiUrl });
+          routes.push({ method: 'POST', template: apiUrl, resource: apiUrl, channel: 'mcp' }, { method: 'GET', template: apiUrl, resource: apiUrl, channel: 'mcp' }, { method: 'DELETE', template: apiUrl, resource: apiUrl, channel: 'mcp' });
         } else if (api.type === 'openapi') {
           const spec = await read(apiUrl); requirePap(typeof spec.openapi === 'string' && spec.openapi.startsWith('3.'), 'unsupported_profile');
           const servers = spec.servers === undefined ? [{ url: new URL(apiUrl).origin }] : spec.servers;
@@ -129,7 +129,21 @@ export class PapDiscovery {
               requirePap(pathItem.servers === undefined, 'unsupported_profile');
               for (const [method, operation] of Object.entries(pathItem)) if (['get','post','put','patch','delete','head','options'].includes(method)) {
                 requirePap(object(operation).servers === undefined, 'unsupported_profile');
-                routes.push({ method: method.toUpperCase(), template: `${base.href.replace(/\/$/, '')}${path}`, resource });
+                const parameters: NonNullable<Route['parameters']> = [];
+                for (const list of [pathItem.parameters, object(operation).parameters]) if (list !== undefined) {
+                  requirePap(Array.isArray(list) && list.length <= 64, 'discovery_failed');
+                  for (const raw of list) {
+                    const parameter = object(raw);
+                    // Unsupported references are not converted into a permissive tool parameter.
+                    if (parameter.$ref !== undefined) continue;
+                    if (parameter.in !== 'path' && parameter.in !== 'query') continue;
+                    requirePap(typeof parameter.name === 'string' && /^[A-Za-z0-9_.-]{1,128}$/.test(parameter.name), 'discovery_failed');
+                    const value = { name: parameter.name, in: parameter.in, required: parameter.required === true } as const;
+                    const index = parameters.findIndex(p => p.name === value.name && p.in === value.in);
+                    if (index >= 0) parameters[index] = value; else parameters.push(value);
+                  }
+                }
+                routes.push({ method: method.toUpperCase(), template: `${base.href.replace(/\/$/, '')}${path}`, resource, parameters, channel: 'openapi' });
               }
             }
           }
@@ -142,7 +156,7 @@ export class PapDiscovery {
       if (protocol.type === 'poppy') {
         const endpoint = httpsUrl(protocol.endpoint).href.replace(/\/$/, '');
         const resource = await serviceResource(endpoint);
-        for (const [method, suffix] of [['POST',''],['GET','/{id}'],['GET','/{id}/messages'],['POST','/{id}/messages'],['POST','/{id}/close']] as const) routes.push({ method, template: endpoint + suffix, resource });
+        for (const [method, suffix] of [['POST',''],['GET','/{id}'],['GET','/{id}/messages'],['POST','/{id}/messages'],['POST','/{id}/close']] as const) routes.push({ method, template: endpoint + suffix, resource, channel: 'poppy' });
       }
     }
     requirePap(routes.length > 0 && routes.length <= 2048, 'unsupported_profile');
