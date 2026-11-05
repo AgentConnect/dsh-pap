@@ -99,3 +99,9 @@ npm run test:native-account-component -- /absolute/C/test/helpers/native-protoco
 进程打印 `public_materials_ready` 后保持存活；将文件交给 G 的 `--materials-file` public-only fixture，用同一端口开启 fresh OTP 窗口，再在该进程 stdin 输入 G handoff.json 的绝对路径。输入通道应保持打开。它只导出 C 确认的原始 CIMD/JWKS 字节，G 不接收 Agent private key；F 不读 `identity_key`，不使用 FixtureHost，所有 Agent identity/delegated/DPoP 签名均通过真实 C/A。实际 loopback listener 接收 callback，并验证 Direct、DPoP 重启恢复、委托轮换、refresh、revoke 与 signed-out。完成后双方精确清理。
 
 两条链分别出具证据：账户链仍允许明确的 C publication acceptance fixture 和隔离 master；默认 HTTPS relay 的完整同一账户链组合、系统 keyring 正向、产品 UI/E2E、System Test 和 registry 发行验证没有因此自动通过。
+
+## 实际 Secret Service 模块验证
+
+`npm run test:keyring-container` 在唯一任务镜像中安装 libsecret-tools/gnome-keyring/dbus，使用真实 F 私有包，不安装宿主软件。运行阶段 network none、根文件系统只读、非 root、有限 tmpfs/资源和独立 DBus/XDG/control；密码只在 stdin/内存。已验证创建/读取、PapStore 加密、新 Node 进程恢复、daemon 重启、锁定拒绝、删除 item 后不重建/不改写既有密文，以及无明文回退。详见 `scripts/keyring-container/README.md`（源码内） 和 [验证记录](docs/verification.md)。
+
+这关闭了隔离容器内真实 Secret Service 的模块证据缺口；宿主仍没有配置该后端，原 `real_missing_backend_only` 结果保持。它不代表宿主 keyring 部署就绪，也不补齐产品 UI/E2E 或 registry 门槛。

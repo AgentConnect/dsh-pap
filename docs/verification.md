@@ -20,7 +20,7 @@
 | 用户与模型 | 管理状态不含Token/JWT/key；授权链接仅用户UI；没有模型tool/Remote通用签名入口 |
 | MCP 隔离 | 独立 PAP schema 与 OAuth account grants；没有machineToken导入、client_credentials或协议回退 |
 
-当前剩余发行/启用门槛：实际 Host Secret Service 正向可用性与恢复；默认 HTTPS relay 与真实账户的同一链路组合；产品管理 UI、产品 E2E 和受影响 System Test；发布后的 registry SDK pin/lock 验证。真实 C/A native 账户组合和 F/C/B exact-device callback 模块链已补证，边界见末节。Device 为另阶段，当前不广告。测试 custody 的成功不能抵消这些未验证范围。
+当前剩余发行/启用门槛：实际 Host Secret Service 配置与恢复（隔离容器正向已补证）；默认 HTTPS relay 与真实账户的同一链路组合；产品管理 UI、产品 E2E 和受影响 System Test；发布后的 registry SDK pin/lock 验证。真实 C/A native 账户组合和 F/C/B exact-device callback 模块链已补证，边界见末节。Device 为另阶段，当前不广告。测试 custody 的成功不能抵消这些未验证范围。
 
 ## 执行记录
 
@@ -63,3 +63,22 @@ Delegation 创建改为先持久预留 attempt，再执行幂等创建/签发。
 首个 native 账户编排在进入任何网络前因 stdin/TTY 与 readline close 顺序失败，已修复后重新生成 native fixture/public materials 并执行成功窗口；失败不计作通过。两次 G 窗口均已核对 DB/role=0、进程停止，独占 PG 27432 停止；F listener、C native 临时状态、PAP 状态 master、公材料文件和 callback 管理 fixture 已精确清理。没有 Token、code、JWT、claim secret 或私钥进入日志/结果。
 
 A owner 另对当前 host 做真实缺后端 keyring 检查：缺少 secret-tool/gnome-keyring-daemon，独立无 activation DBus/private XDG 中 F KeyringSecretStore get/create/PapStore.transaction 均 credential_unavailable、无文件 fallback。此项只能记为 real_missing_backend_only；Secret Service 正向 create/restart/locked/missing-item 未执行。
+
+## 隔离容器真实 Secret Service 正向补证
+
+2026-11-06 在任务专用 Docker 镜像/容器内直接导入 F 实际私有包的 KeyringSecretStore/PapStore，9 项检查全部通过；没有替代 secret-tool/Secret Service，没有 Agent private key，也没有修改生产实现。输入私有包为 aa4241089027bc003d18b2a36080d4780a7fccff 的候选，SHA-256 `1db4804f23af43ffcad4a094ded981e2f7f8a5b8df624a28ee9f6eed2db2b30b`；三份相关源文件 SHA 在结果中记录且与运行后仓库完全相同。
+
+实际检查：真实 create/get、PapStore 加密事务、新 Node 进程取 key/恢复状态、gnome-keyring-daemon 重启、Lock 后 get 不返回 key/create 和 PapStore read 拒绝且密文不变、带 stdin 密码启动新 daemon 后恢复同一 key/state、clear item 后既有状态 read/transaction 均 credential_unavailable 且不重建/不改写，以及私有普通文件中没有明文 key/password/marker 或 fallback。
+
+- 入口：`node scripts/keyring-container/run.mjs`，只运行该真实模块验证，没有重跑完整 owner/System/E2E 套件。
+- 成功 run：`worktrees/20261104-dsh-shared-agent-identity/.artifacts/keyring-verification/secret-service-container/run-20261105t185044615-a3063167/`。
+- 基镜像：`node:22.23.1-bookworm-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3`，实际 Node v22.23.1。
+- 最终任务镜像 digest：`sha256:8a56b828b5f50bae4eaac282304a223653f40d2c9a8ca19a4b3b2f478b4020e5`；tag `dsh-pap-secretservice-check:run-20261105t185044615-a3063167`，没有 push。
+- 实际包版本：libsecret-tools `0.20.5-3`、gnome-keyring `42.1-1+b2`、dbus `1.14.10-1~deb12u1`；完整依赖版本在 result.json。
+- 结果 `output/result.json` SHA-256：`56bdaaea832b17129c3ad901dfc36a671e9e9caac964b1dcf7f59df2bcfb56d4`。
+
+运行时使用 --rm/network none/read-only root、非 root、cap-drop ALL/no-new-privileges、有限 pids/memory/CPU、私有 tmpfs、仅任务 evidence 可写路径。私有 DBus 不配置 activation 服务目录，XDG/control/state 独立，不改 HOME、不接宿主 DBus/keyring。Secret Service、DBus、私有状态清理均核实 true，容器无残留；失败尝试的专属 image tag 已删除，只保留最终镜像供核对。
+
+前期 harness 断言曾误用成功 read 之前的密文摘要（read 会推进 generation），另有 host log stream 收尾和运行中 CLI unlock 假设的问题；修正验证编排后重新执行，旧失败结果保留且不计通过。锁定后的恢复采用真实 daemon 重启并从 stdin 提供同一密码，不冒称 headless in-place CLI unlock 成功。
+
+原宿主 negative result 完整保留。结论是 isolated_container_real_secret_service，不是“宿主已配置 keyring”。另已核对 C clean `481ac1707b2287b03a08725141ce81d983dcda6a` 与前述两真实组件执行时的 7 个关键源文件完全同字节；可绑定 C481/Bf2/G242 的已测来源，不再只停在 dirty source 描述。
