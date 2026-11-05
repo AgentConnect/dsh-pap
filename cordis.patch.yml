@@ -1,0 +1,8 @@
+# Requires the local C identity/native provider and the Host's papHost secrets/handoff service.
+- insert:
+    - id: pap
+      name: '@agentconnect/dsh-pap/plugin'
+      config:
+        stateRoot: !!js process.env.DSH_PAP_STATE_ROOT
+        binding: !!js JSON.parse(process.env.DSH_PAP_IDENTITY_BINDING ?? 'null')
+        policyRef: !!js process.env.DSH_PAP_POLICY_REF

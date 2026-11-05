@@ -1,0 +1,18 @@
+export type PapErrorCode =
+  | 'discovery_failed' | 'unsupported_profile' | 'unsafe_destination' | 'namespace_changed'
+  | 'permission_denied' | 'state_conflict' | 'state_corrupt' | 'credential_unavailable'
+  | 'delegation_blocked' | 'invalid_session' | 'session_ended' | 'invalid_token'
+  | 'reauthorization_required' | 'unsupported_sign_in' | 'invalid_authorization_response'
+  | 'insufficient_scope' | 'unauthorized_client' | 'rate_limited' | 'request_uncertain'
+  | 'redirect_blocked' | 'oauth_error' | 'disconnected' | 'revocation_pending';
+
+/** Errors are deliberately fixed text: no remote payloads or credentials. */
+export class PapError extends Error {
+  constructor(readonly code: PapErrorCode, readonly retryAfterSeconds?: number) {
+    super(`PAP operation failed: ${code}`);
+    this.name = 'PapError';
+  }
+}
+export function requirePap(condition: unknown, code: PapErrorCode): asserts condition {
+  if (!condition) throw new PapError(code);
+}

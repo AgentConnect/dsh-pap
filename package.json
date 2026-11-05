@@ -1,0 +1,50 @@
+{
+  "name": "@agentconnect/dsh-pap",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Private local-custody PAP 0.3 client for DeepSeek Harness",
+  "type": "module",
+  "license": "UNLICENSED",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": "./lib/index.js",
+    "./host": "./lib/host.js",
+    "./plugin": "./lib/plugin.js",
+    "./host-secrets": "./lib/host-secrets.js"
+  },
+  "files": [
+    "lib",
+    "README.md",
+    "cordis.patch.yml",
+    "docs"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "npm run build && tsx --test tests/*.test.ts",
+    "test:native-component": "tsx scripts/native-component.ts",
+    "test:frontvia-component": "tsx scripts/frontvia-component.ts"
+  },
+  "dependencies": {
+    "proper-lockfile": "4.1.2"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@types/node": "24.3.0",
+    "@types/proper-lockfile": "4.1.4",
+    "tsx": "4.20.6",
+    "typescript": "6.0.3"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
