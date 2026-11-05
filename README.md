@@ -98,7 +98,7 @@ npm run test:native-account-component -- /absolute/C/test/helpers/native-protoco
 
 进程打印 `public_materials_ready` 后保持存活；将文件交给 G 的 `--materials-file` public-only fixture，用同一端口开启 fresh OTP 窗口，再在该进程 stdin 输入 G handoff.json 的绝对路径。输入通道应保持打开。它只导出 C 确认的原始 CIMD/JWKS 字节，G 不接收 Agent private key；F 不读 `identity_key`，不使用 FixtureHost，所有 Agent identity/delegated/DPoP 签名均通过真实 C/A。实际 loopback listener 接收 callback，并验证 Direct、DPoP 重启恢复、委托轮换、refresh、revoke 与 signed-out。完成后双方精确清理。
 
-两条链分别出具证据：账户链仍允许明确的 C publication acceptance fixture 和隔离 master；默认 HTTPS relay 的完整同一账户链组合、系统 keyring 正向、产品 UI/E2E、System Test 和 registry 发行验证没有因此自动通过。
+上述两条独立链保留其历史边界；后续默认 HTTPS relay 与同一 native 账户已通过下面的新联合入口。宿主 keyring 配置、产品 UI/E2E、System Test 和 registry 发行仍不因此自动通过。
 
 ## 实际 Secret Service 模块验证
 
@@ -115,3 +115,15 @@ close、断开和账户退出可取消等待；这些动作不清除共享 fence
 401/403 优先解析标准 Bearer/DPoP WWW-Authenticate，支持多 challenge、quoted comma/escape，重复或歧义参数拒绝。`PapError.authHint` 只可能包含固定 scheme、当前 Company 已广告的合法 scope 和当前 resource 的精确标准 PRM URL；realm、error_description、任意 URL/query 或远端秘密不会进入提示/日志。提示不触发 metadata fetch、resource 切换、Token 请求或扩权。非标准 Session/旧登录错误不能通过 OAuth challenge 触发新 sid 或副作用重放。
 
 定向回归入口：`npm run test:p22`。该入口仅 owning client/storage/HTTP 检查，不运行 System Test 或产品 E2E。
+
+## 默认 HTTPS relay 与同一 native 账户联合入口
+
+```bash
+npm run test:relay-native-account-component -- /absolute/C/test/helpers/managed-callback-fixture.ts /absolute/user-service /absolute/venv/bin/python /absolute/public-materials.json https://agent.test:29443
+```
+
+脚本以真实 C 批准/A native/B 注册、Registry 和 PAP 发布建立同一身份，重新打开相同 native Store 安装显式 PAP consumer policy，导出原始 B CIMD/JWKS 公材料；不导出 provider、lease、Token 或 Agent private key。它打印 `public_materials_ready` 和精确的 `callbackForward` 后等待 stdin。G 使用 `--materials-file <file> --fixture-port 29443 --callback-forward <listener URL> --handoff-only` 开启独立 fresh 账户窗口，再将其 handoff.json 的绝对路径输入该进程。
+
+该 lane 始终注册 `https://agent.test:29443/user-service/v1/pap-callback` 并使用显式 `handoff`。G 只对这个精确 HTTPS GET 转发原 query 到 Node 的 127 listener，不转 caller auth/cookie/DPoP/Session，也不记录 query/code；Node 只转发到 `helper.fetch` 的真实 B public callback，不自行保存或领取 code。随后 F `DeviceCallbackHandoff` 经真实 C 原设备 proof 领取，由原本地 PKCE verifier 兑换 G 的实际 code。没有 fake callback、没有以 RFC8252 loopback URI 替代默认 relay。内部 127 HTTP 仅为隔离 HTTPS publisher 到 B ASGI 的测试转发路径。
+
+实际同一链已通过真实 HTTPS 公材料/AS code→B receive→C device claim→PKCE/DPoP account→restart key restore→delegation rotation→refresh→revoke→signed-out。生产执行 lineage 为 `7325b80`，测试脚本之后单独入库；双方精确清理，只有隔离 master 和外部邮件投递 capture 的已声明边界。它是源级真实模块证据，不是已安装 DSH 产品、外部短信/邮件投递、宿主 keyring 配置或 registry 发布 gate。

@@ -28,7 +28,8 @@
     "test:callback-component": "tsx scripts/callback-component.ts",
     "test:native-account-component": "tsx scripts/native-frontvia-component.ts",
     "test:keyring-container": "node scripts/keyring-container/run.mjs",
-    "test:p22": "npm run typecheck && tsx --test tests/cooldown-challenge.test.ts tests/client.test.ts tests/network-store.test.ts"
+    "test:p22": "npm run typecheck && tsx --test tests/cooldown-challenge.test.ts tests/client.test.ts tests/network-store.test.ts",
+    "test:relay-native-account-component": "tsx scripts/relay-native-frontvia-component.ts"
   },
   "dependencies": {
     "proper-lockfile": "4.1.2"

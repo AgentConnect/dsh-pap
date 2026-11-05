@@ -20,7 +20,7 @@
 | 用户与模型 | 管理状态不含Token/JWT/key；授权链接仅用户UI；没有模型tool/Remote通用签名入口 |
 | MCP 隔离 | 独立 PAP schema 与 OAuth account grants；没有machineToken导入、client_credentials或协议回退 |
 
-当前剩余发行/启用门槛：实际 Host Secret Service 配置与恢复（隔离容器正向已补证）；默认 HTTPS relay 与真实账户的同一链路组合；产品管理 UI、产品 E2E 和受影响 System Test；发布后的 registry SDK pin/lock 验证。真实 C/A native 账户组合和 F/C/B exact-device callback 模块链已补证，边界见末节。Device 为另阶段，当前不广告。测试 custody 的成功不能抵消这些未验证范围。
+当前剩余发行/启用门槛：实际 Host Secret Service 配置与恢复（隔离容器正向已补证）；产品管理 UI、产品 E2E 和受影响 System Test；发布后的 registry SDK pin/lock 验证。真实 C/A native 账户组合和 F/C/B exact-device callback 模块链已补证，边界见末节。Device 为另阶段，当前不广告。测试 custody 的成功不能抵消这些未验证范围。
 
 ## 执行记录
 
@@ -100,3 +100,24 @@ H 指出的发送窗口也已关闭：签名后若因 Store 锁/secret resolver 
 此前容器SecretService正向测试仍绑定旧输入包/Store源码；本轮Store只加cooldowns的加密schema默认值/迁移，cipher/atomic/key逻辑未改，keyring实现未改。最新focused storage regression通过，但不把旧container Store整文件hash称为当前相同；宿主未配置的边界不变。
 
 P22 收尾补充：AS 冷却期间也复查本地 code transaction.expiresAt；窗口尚未结束但交易已到期时，不签新的客户端断言、不发送 code。追加真实短时间窗回归，并重跑 P06 与 delayed-signer 取消用例：`npx tsx --test --test-name-pattern='P22 an expiring|P06 fixture|cancelled code exchange' tests/cooldown-challenge.test.ts tests/client.test.ts`，**3/3** 通过。此为前述48项之外一项新expiry场景及两项复验，不把重叠用例重复累加为一轮全量结果。
+
+## 最终 production 7325 的最小真实重绑与默认 relay 联合链
+
+生产保持 `7325b80a2b5c4b4b5e5e80d1ff1304921c9d1bb7`，没有修改 src 或 package-lock；此前更旧源码的 positive 没有直接冒充本轮。
+
+- 当前 7325 私有包 `5fcaca0d98fa857433a1af0e8786f33ce545595136fcd4763a46fcc98cb7a255` 输入新 Secret Service source layer，真实 **9/9** 通过；source 三文件及 compiled JS 与当前文件逐SHA一致。新镜像 `sha256:fea7c2a0f03570a8bc636c1d3c19505a79964bb0b7f573363d7473fe039aa72c`；结果 `run-20261105t200941309-2cad8afb/output/result.json` SHA `6b764c884c6c57689211c580b85afda8496ce7ce9ff9abda58a3a60bfa7c9350`，daemon/DBus/private state清理均true、--rm无容器。该结论仍是隔离容器，不是宿主已配。
+- 旧 callback component 以 C95c5f5/B04fe 重新通过一次。C当时全仓dirty仅无关test helper，31个 production src+managed helper实际执行文件全部匹配HEAD blob且pre/post无变，未虚写全仓clean；B clean且pre/post无变。F `.artifacts/rebind-7325/summary.json` SHA `37fc0078f14e5ccf02b201bc8ecd939ddc040e7ed12cbe38152c2c4008aa6d8e`。
+
+默认 HTTPS relay + same-native 账户联合新入口 `scripts/relay-native-frontvia-component.ts` 已在 G `pap03_9ba25075199a` 实际通过。它直接使用 B 扩展的 `createManagedCallbackFixture` 完整显式 policy tuple，实际 C 批准/E1 native/B factor 注册/Registry/PAP publication，C public material 是 B 原始 GET bytes。所有 Agent identity/delegated/DPoP key 仅经 C/A 本地 custody；不是 FixtureHost，也不是 publication acceptance mock。隔离 master、测试邮件投递 capture 与 G 保留 OTP身份范围仍明确。
+
+实际请求次序为：F startSignIn真实登记→G AS真实consent/code→真实TLS `https://agent.test:29443/user-service/v1/pap-callback`→G精确路径代理→Node只`helper.fetch`实际B callback→F DeviceCallbackHandoff 原设备一次领取→本地PKCE换标准Token→DPoP账户→重启DPoP restore→委托轮换（Token请求数不变）→显式refresh→revoke→signed-out。callback forwarded/received=1，Token endpoint仅2次（code+refresh）。Node proxy没有parse/store/claim code，G ledger只固定path不含query；不能把内部127转发称为AS loopback callback lane。
+
+原生consumer结构stdout保存 `.artifacts/default-relay-native-7325/consumer-result.json`，SHA `fe02de620a06de33c7d0c88a51e8bb519550d6ae65e3d31f999d025d7bec981c`；与 G 原生 `pap03_9ba25075199a/result.json`（SHA `f601ccef6c5711e5512af342f08f4911399e84ca6738143898808dea143c241c`）配对。最终 summary SHA `23b97c3feb4e2e79543cf1838514aa34225a46388089f594753c3d84dd5b7b98` 是初始 summary27d 加最终 producer blob绑定后的版本，consumer/G结果没有改动。
+
+G独立核对 metadata/JWKS各11GET，原始bytes SHA分别 `1ca906fee0216195d57244b35f7108f1b27a4acd8f0a553cf1e421e1a19a6fcd` / `ad5c33829caba2ee7a4bb371aefc7df9fffa339b17a433f1c59be23fb5f6fcaa`，固定callback forwarded1/non-success0，DB/roles0、process stopped、PG27432停止。F listener、native/PAP临时状态、master、公材料与B临时MySQL fixture清理完成，process exit0。
+
+执行时 C managed helper17d737/B bridgec857 pre/post逐SHA相同，并分别与最终 C commit `fddc8a3e1bb81409ef9eb06ed5e6bbdda8bdd735` / B commit `6dcf839c0d2eff1f63d881695c20cc80445cc7ac` 的blob逐字节匹配。实际生产仍native e2c4、G binary35f626；H/G/E在同一生产7325上另行运行P01/P28，不以此账户链代替MCP回归，也未让此test-only入库改动抢占其HEAD guard。
+
+本轮没有重复 full owner suite、System Test、产品E2E或依赖发布检查。测试脚本已typecheck并实际运行，后续只提交脚本/说明，生产src/lock继续与7325同字节。
+
+H/G/E 的 P01/P28 联合已完成并释放 F HEAD guard：原生工具结果结构化归档为 `cimd-oauth-server/ts/.local/verification/shared-protocol-final-20261106.json`，SHA `fcd4f93190bf787a1e7e93caf4455b0bc3b71f99b2c6a64cce74fa3fc2392ea9`。实际绑定 F7325/Daf6/C helperd193/nativee2：PAP NoAS真实C/A→HTTPS、Token0，关闭engine/实际PAP Context/lease/server，随后同DID/CIMD在新独立MCP Context完成陌生client CC双工具、真实等待8.5s DB expiry后再次CC双工具，Token2且均CC、无callback/authorize/refresh。PG owner与私有/tmp/cimd-pg.rvezGbFr已EXIT删除。该结果来自已完成tool25276 stdout归档与guard后source复核，不是本轮F另跑，也不是新test-only HEAD的执行来源。
