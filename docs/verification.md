@@ -98,3 +98,5 @@ H 指出的发送窗口也已关闭：签名后若因 Store 锁/secret resolver 
 旧 client 回归原来在429后立即检查许可撤销，现因持久fence先返回rate_limited，已用显式测试时钟走过该窗口再隔离检查permission_denied；不是清除生产fence。
 
 此前容器SecretService正向测试仍绑定旧输入包/Store源码；本轮Store只加cooldowns的加密schema默认值/迁移，cipher/atomic/key逻辑未改，keyring实现未改。最新focused storage regression通过，但不把旧container Store整文件hash称为当前相同；宿主未配置的边界不变。
+
+P22 收尾补充：AS 冷却期间也复查本地 code transaction.expiresAt；窗口尚未结束但交易已到期时，不签新的客户端断言、不发送 code。追加真实短时间窗回归，并重跑 P06 与 delayed-signer 取消用例：`npx tsx --test --test-name-pattern='P22 an expiring|P06 fixture|cancelled code exchange' tests/cooldown-challenge.test.ts tests/client.test.ts`，**3/3** 通过。此为前述48项之外一项新expiry场景及两项复验，不把重叠用例重复累加为一轮全量结果。

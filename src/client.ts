@@ -121,7 +121,7 @@ export class PapClient {
     if (context.accountSlot && context.accountEpoch !== undefined) {
       const slot = state.accountSlots[context.accountSlot]; requirePap(slot && this.sameUser(state, slot.subjectRef, subject) && slot.epoch === context.accountEpoch && slot.signedOut === Boolean(context.allowSignedOut), 'reauthorization_required');
     }
-    if (context.transactionRef) { const transaction = state.transactions[context.transactionRef]; requirePap(transaction?.status === 'exchanging' && transaction.accountSlot === context.accountSlot && transaction.accountEpoch === context.accountEpoch, 'reauthorization_required'); }
+    if (context.transactionRef) { const transaction = state.transactions[context.transactionRef]; requirePap(transaction?.status === 'exchanging' && transaction.expiresAt > this.clock() && transaction.accountSlot === context.accountSlot && transaction.accountEpoch === context.accountEpoch, 'reauthorization_required'); }
     if (context.grantRef) { const grant = state.grants[context.grantRef]; requirePap(grant && grant.generation === context.grantGeneration && grant.status === (context.allowSignedOut ? 'revocation_pending' : 'refreshing'), 'state_conflict'); }
   }
   private async awaitCooldown(key: string, context: WaitContext): Promise<void> {
