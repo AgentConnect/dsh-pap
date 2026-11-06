@@ -172,3 +172,19 @@ Legacy规则由Root明确确认：无vault却有grant/slot、任意已处理或�
 - 默认backend sidecar复用image `sha256:fea7c2a0f03570a8bc636c1d3c19505a79964bb0b7f573363d7473fe039aa72c`；固定本机`unix:///var/run/docker.sock`，CLI最小env，shim固化inspected containerId+privateDBus+closedargv，无Host HOME/DBus/keyring mount。current Keyring/PapStore/vault real create/get、密文、daemon restart、新Host Node与vault恢复4项过；预取消/启动中取消也清理且task container inventory不变。该后端容器不是宿主已配置。所有key/pass只stdin/内存/捕获stdout，无日志。
 
 上述native默认backend链结束已核C/F state、TLS server、SecretService/DBus/private state/container/shim全清理，HOME不变。新actual account产品链另由 `scripts/product-account-component.ts` 准备，严格使用fresh C factory与实际user Remote、defaultbackend、B固定HTTPS relay、G真实OAuth/DPoP，不使用旧直接new PapClient/managed callback helper。其新C/A M12候选及运行结果尚需单独绑定；不以NoAS或旧账户组件冒充此层通过。Desktop profile/renderer最终产品gate仍由Root执行。
+
+## 最终 actual product-account：F43 / C M12 / A FFB / G35
+
+实际执行F源码为 clean `43aac767fa1c73ecdb7a60e1f263c1ec06155d8f`。命令为 `npx tsx --tsconfig .local/tsconfig.product-native.json scripts/product-account-component.ts <C test/helpers/product-host-fixture.ts> <B source> <Python> <public-only-materials.json> <Desktop installed dsh-tools/lib/index.js> ffb6c3a6ee7bcd5592184db57c865d0a90748a6379636ca203a5ad42012718b9`；TTY99220只输入G handoff绝对路径，stdout只有ready/public hash与最终脱敏结构。source aliases明确指A bindings/node主包与provider，C/Harness peers保持当前正式registry，不伪称同号NPM已具新native接口。
+
+这一次不再直接new PapClient或传旧managed-callback helper：真实C创建批准→strict B独立用户确认/注册/Registry/PAP all3发布→同store按真实ref装入一次性PAP policy→实际Loader根marker、Fplugin、Fmanager、Ftools与真实ToolRuntime。F只收到C真实factory/config；测试用户control和个人Company登录actor留在controller外，插件没有Native/DeviceAccess/邮箱control。papHost仅提供明确fixture网络transport，不提供secrets，F走默认KeyringSecretStore与真实私有SecretService后端。
+
+实际路径：signed-out Session请求/Token0→用户Remote startSignIn→C目标绑定callback登记→G真实个人OTP/consent/code→真实TLS固定HTTPS callback→G唯一GET代理→Node只forward原query到B实际public callback→F用户collect经C真实原设备claim+本地PKCE换码→DPoP账户GET→实际Loader disable/enable F→DPoP key恢复→用户account/refresh→DPoP账户GET→account/sign-out/revoke→signed-out调用继续。callback forwarded/received各1；Token endpoint恰2次，grant_type只有authorization_code和refresh_token；revoke1。重启后记录 **userReselectedAfterRestart=true**，即复核状态后执行了一次显式用户重选，不能描述成全自动恢复无需用户动作；没有重新账户授权/新增code请求，原DPoP/账户恢复仍实际通过。
+
+实际唯一加载native为 `ffb6c3a6ee7bcd5592184db57c865d0a90748a6379636ca203a5ad42012718b9`，C production index `fd24642860074a964be7116ab7a045cdba16d0a474220a90f5b4c8e35c6a95fc` / target-policy `5dfa70b0f0b1dd3ac8c64a44c62b35fbdf13d7f857d43e7fddaed92aad91cb7b`。全部F src（含browser）与C src pre/post逐SHA相同，F源与执行43 commit blobs逐项绑定。G生产binary仍 `35f6265876ef98daa69e8780f055ed2e6f164468494f1241b711dd2e7be09444`，helper e564/strict bridge b89。主体仍本地AES-GCM文件；主key当前为已实现OS backend，sidecar只用于隔离模块验证，不新增运行时服务/文件fallback，不把这次计成宿主OS已配置。C Native root在fixture明确使用A任务local-file custody，非A OS keyring产品gate替代。
+
+消费者结构归档 `.artifacts/product-account-43/consumer-result.json` SHA `de0f2fd8c161df93adcce17c32a76cf07ff65b1e2dc8a24f302354e3e29337cd`，archiveProvenance明确：已完成PTY99220最后JSON stdout的结构化归档+postexit source重新hash/F43blob绑定，不是重新运行，不冒称runner直接原生落盘。对应G原生 `platform/.local/pap03/pap03_1b87dd6acaab/result.json` SHA `91bd206da87a009022650129f0e3ed286feea490712ad81de7ca219522574159`。
+
+G独立核验真实公开metadata/JWKS各GET10，served字节SHA与实际B公开raw strings完全一致：`d67223640067a86017ee7e32afe4333adfb3792295f2d7d6266a857613b0ca20` / `796035da6c8f2a587ac8faa3b4046dda9251d8b4224af28ece484f82b9c8583a`；callback仅固定path1/error0，result/ledger无code/state/iss query或Token。G是handoff-only窗口owner checks0，不把历史16suite算本次重跑。
+
+消费者exit0后C/F临时state/SQL、Node relay、公开材料、SecretService/DBus/private tmpfs/container/shim全精确清理，HOME不变。G确认DB0/role0/process stopped，27432/29443无监听且ownedPG停止，guard已释放。B为实际production ASGI/fullmiddleware的逻辑HTTPS模块调用，Company为真实TLS/Rust/PG；没有GUI产品E2E、System Test、LLM runtime、共享部署、push或发布。Desktop正式profile/renderer最终验收另由Root owning。

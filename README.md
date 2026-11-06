@@ -157,4 +157,4 @@ AT/RT 的脱敏不限于一次请求或当前 grant：有效 AS response 在返�
 
 侧车入口 `scripts/secret-service-sidecar-component.ts` 单独验证当前加密 vault 的真实 backend create/get、daemon 重启、新 Host Node 进程恢复和无明文；镜像复用已核验 fea7c2…，不是把整个 C/Python 仓库搬入容器。原始宿主缺后端记录仍成立，容器后端不代表宿主已配置。
 
-新实际账户入口 `scripts/product-account-component.ts` 已准备，使用新 C factory 与 user Remote、固定 B HTTPS relay、G 实际 OAuth/DPoP 及默认 backend；需显式当前 A runtime aliases、冻结 native SHA 与 G fresh window。其运行结果按实际 source/hash 另记，不用旧直接 PapClient/managed-callback helper 替代。
+新实际账户入口 `scripts/product-account-component.ts` 已实际通过：使用新 C factory 与 user Remote、固定 B HTTPS relay、G 实际 OAuth/DPoP 及默认 backend；显式当前 A runtime aliases，并核实际加载冻结 native FFB。它不是旧直接 PapClient/managed-callback helper 的替代计数，完整来源见验证记录。
