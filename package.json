@@ -2,9 +2,9 @@
   "name": "@agentconnect/dsh-pap",
   "version": "0.1.0",
   "private": true,
-  "description": "Private local-custody PAP 0.3 client for DeepSeek Harness",
+  "description": "Local-custody PAP 0.3 client for DeepSeek Harness",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {
