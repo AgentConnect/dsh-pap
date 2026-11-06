@@ -64,18 +64,19 @@ export function prepareOperation(state: PapState, input: PapOperationRequest): {
 }
 
 const privateFields = /^(?:token|access[_-]?token|refresh[_-]?token|id[_-]?token|authorization|proxy[_-]?authorization|dpop|poppy[_-]?session|private[_-]?key|client[_-]?secret|client[_-]?assertion|code[_-]?verifier|claim[_-]?secret|callbackRef)$/i;
-export function privateValues(state: PapState): string[] {
+export function privateValues(state: PapState, includeOAuthState = true): string[] {
   const values: (string | undefined)[] = [];
   for (const grant of Object.values(state.grants)) values.push(grant.accessToken, grant.refreshToken, grant.dpopKey?.handle);
   for (const subject of Object.values(state.subjects)) values.push(subject.userId, subject.agentId);
   for (const session of Object.values(state.sessions)) values.push(session.sid);
   for (const delegation of Object.values(state.delegations)) values.push(delegation.compact, delegation.key.handle);
   for (const tx of Object.values(state.transactions)) {
-    values.push(tx.state, tx.verifier, tx.callbackRef, tx.dpopKey?.handle);
+    values.push(includeOAuthState ? tx.state : undefined, tx.verifier, tx.callbackRef, tx.dpopKey?.handle);
     if (tx.callbackRef) try { const claim = JSON.parse(tx.callbackRef); if (typeof claim.claimSecret === 'string') values.push(claim.claimSecret); } catch { /* No cleartext fallback for an unknown callback reference. */ }
   }
   return [...new Set(values.filter((value): value is string => typeof value === 'string' && value.length > 0))];
 }
+export function sanitizePublicValue(value: unknown, secrets: readonly string[]): unknown { return redact(value,secrets); }
 /** Only business JSON crosses the tool boundary. Protocol headers and credential-shaped fields do not. */
 function redact(value: unknown, secrets: readonly string[], depth = 0): unknown {
   requirePap(depth <= 32, 'unsupported_profile');

@@ -20,7 +20,7 @@ Device 为后续独立阶段，当前返回 `unsupported_sign_in` 并且不广�
 
 ## Host 接入
 
-`@agentconnect/dsh-pap/plugin` 提供实际 Cordis `pap` 服务；bundle 同时挂载用户管理 `./management-remote` 和模型工具 `./tools`。默认 `enabled: false`，没有 Company、identity 或 policy 时不执行网络发现、创建凭据或签名。用户仍可读取 disabled/unconfigured 状态。启用需要 Host 的明确 profile 配置，不再读取 `DSH_PAP_*` 环境变量或接受自报 binding：
+`@agentconnect/dsh-pap/plugin` 提供实际 Cordis `pap` 服务；bundle 同时挂载用户管理 `./management-remote`、模型工具 `./tools` 和根 package 的 client declaration marker。根 `@agentconnect/dsh-pap` 保留 Host 库 exports，作为 Cordis row 时仅是无能力 marker；不提供第二个 pap 服务、不注入 C 或 credentials。真实 consumer 始终是唯一的 `@agentconnect/dsh-pap/plugin`。默认 `enabled: false`，没有 Company、identity 或 policy 时不执行网络发现、创建凭据或签名。用户仍可读取 disabled/unconfigured 状态。启用需要 Host 的明确 profile 配置，不再读取 `DSH_PAP_*` 环境变量或接受自报 binding：
 
 ```yaml
 - id: pap
@@ -45,9 +45,11 @@ C 服务需实现 `bindProtocolConsumer(actualInstalledContext)` 与 `bindPapHos
 | `session/connect` / `session/disconnect` | 建立 signed-out 或明确 account slot 的 Session／断开 |
 | `operation/enable` / `operation/disable` | 将已发现 operation 绑定到用户选定的 Session 与 scope，或撤销 |
 | `account/sign-in` | 选定 operation/resource 和 scopes，使用实际已发布的 HTTPS callback 发起 Direct |
-| `account/collect` / `account/sign-out` | 原设备一次领取后换码／退出指定账户 slot |
+| `account/collect` / `account/refresh` / `account/sign-out` | 原设备一次领取后换码／显式刷新或退出指定账户 slot；不接受 grantRef、resource、scope 或 Token |
 
-`account/sign-in` 的授权 URL 只返回给上述用户管理调用，需由真实用户 UI 打开。state、code、PKCE、callbackRef、claim secret、Token、key handle 不进入模型工具。此包提供管理 Remote 合同，不包含产品 settings 界面；Desktop owner 负责 UI 和 profile 的最终装入。
+`account/sign-in` 的授权 URL 只返回给上述用户管理调用，需由真实用户 UI 打开。state、code、PKCE、callbackRef、claim secret、Token、key handle 不进入模型工具。包内 `./client` 现提供最小 settings.section“PAP 连接”：只从 C 的公开 listIdentities/publicationStatus 选择已发布且支持 PAP Session 的 reference，发现 Company、建立连接、明确批准操作及其账户权限、显式发起浏览器登录/领取、刷新、退出和断开。登录链接只由用户点击，带 noopener/noreferrer，不由模型自动打开。默认 disabled、C 未 ready、缺秘密后端和 legacy history 门禁均有安全状态，不切 fallback。UI 只调用用户 Remote，不持有 Host secret、C signer capability、DeviceAccess 或 callback proof。Desktop owner 负责最终正式 profile/renderer 装入和产品验证。
+
+`package.dsh.client` 使用现有 Web/Settings/Remote 依赖，`./client` 指向独立 `lib/browser-client.js`。Host 核心仍在 `lib/client.js`，不被 browser build 覆盖；实际 client-modules 通过根 marker 找到并服务 browser export。
 
 模型只有 `pap_status`、`pap_operations`、`pap_request` 三个工具。`pap_request` 输入只含本地 `operationRef`、已声明 path/query 参数及可选 JSON body，不接受 URL、method、Header、resource、scopes、account slot 或认证 metadata。method/destination/resource/session 来自本地已发现描述与用户授权。每次启用产生新的持久授权 generation，撤销后重新启用也不能让旧的在途调用越过发送前 fence。操作输出只给有界业务 JSON／状态，不透传响应 Header。除凭据字段和 JWT 模式外，实际发送前只在 Host 内存捕获本次 Session/DPoP/access/refresh 等值，任意 JSON key/value 或嵌入消息中的同值也遮盖；自动 refresh 后即使 sign-out 清空 Store，迟到 response 也不能回显新凭据。当前工具是 HTTP operation adapter；MCP 描述不会被当成已经实现的 PAP MCP transport，机器 MCP 不作 PAP 回退。
 
@@ -138,3 +140,21 @@ npm run test:relay-native-account-component -- /absolute/C/test/helpers/managed-
 该 lane 始终注册 `https://agent.test:29443/user-service/v1/pap-callback` 并使用显式 `handoff`。G 只对这个精确 HTTPS GET 转发原 query 到 Node 的 127 listener，不转 caller auth/cookie/DPoP/Session，也不记录 query/code；Node 只转发到 `helper.fetch` 的真实 B public callback，不自行保存或领取 code。随后 F `DeviceCallbackHandoff` 经真实 C 原设备 proof 领取，由原本地 PKCE verifier 兑换 G 的实际 code。没有 fake callback、没有以 RFC8252 loopback URI 替代默认 relay。内部 127 HTTP 仅为隔离 HTTPS publisher 到 B ASGI 的测试转发路径。
 
 实际同一链已通过真实 HTTPS 公材料/AS code→B receive→C device claim→PKCE/DPoP account→restart key restore→delegation rotation→refresh→revoke→signed-out。生产执行 lineage 为 `7325b80`，测试脚本之后单独入库；双方精确清理，只有隔离 master 和外部邮件投递 capture 的已声明边界。它是源级真实模块证据，不是已安装 DSH 产品、外部短信/邮件投递、宿主 keyring 配置或 registry 发布 gate。
+
+## S15 凭据历史与 legacy 门禁
+
+AT/RT 的脱敏不限于一次请求或当前 grant：有效 AS response 在返回解析前先归档到现有 AES-GCM PapStore 的私有 credentialVault，替换、刷新和清除前也在同一事务保存旧值。vault 与协议授权分离，只用于防止已知凭据从任意业务 JSON key/value、Company 名称、operation 路径、公开状态或错误字段回显；它不构成 grant 或恢复签名权。运行内已知寿命使用单调时钟并 pin 在途响应；重启后的私有 tombstone 保守按未知剩余寿命保留，不凭本地24h使用上限猜测 AS/RT 期限。上限4096值/4MiB，容量不足锁闭输出，不驱逐仍可能有效值。不能把旧 AT 从当前 grant 消失当作脱敏完成。
+
+当前 state/verifier/claim/sid 等映射与本次真正发送的材料也会过滤；只有明确用户 account/sign-in 的 authorizationUrl 字段保留正常 OAuth state/challenge。跨请求及跨重启的持久历史承诺专指已观察 AT/RT，不宣称无限重构已删除的旧协议 nonce 或未知过去值。
+
+新 vault 有完整性标记。老加密状态没有 vault，但存在任意 grant、account slot、登录事务（包括 cancelled/failed）、AS nonce 或 DPoP retirement 迹象时，迁移为 legacy_incomplete；seed 当前已知 Token 不等于补全历史。Agent 请求及动态 Company/catalog/status 输出停止，只有固定迁移码。用户只见 Host 产生的账户引用与封闭状态，可尝试正常撤销当前账户；退出/latest revoke 不会自动把历史标为完整。旧纯 NoAS 状态仅在无账户处理迹象时可迁移 complete。加密数据、epoch、cooldown fence 都保留，不自动 wipe、新建 key 或放开权限。
+
+本轮没有“confirmed:true”、重置按钮或普通 Remote 恢复入口。处理 legacy 需要独立受信 Host 运维证据：对应 issuer/client/resource 的全部旧凭据已撤销事实，并保留审计来源；不能让模型或普通业务请求声明已确认。既有未知旧值无法重构，不把它们写成已覆盖。
+
+## 实际产品模块与默认秘密后端组件
+
+`scripts/product-native-component.ts` 使用真实 fresh C approval/B strict 注册发布→同 store C Host 重开→实际 F plugin/manager/tools 与实际 DSH ToolRuntime，向独立 HTTPS NoAS verifier 发送2条实际 Delegation/Session；批准前0请求、卸载后0后续请求、Company Token0。F 只注入隔离网络 transport，秘密存储走默认 KeyringSecretStore。Host 进程中的私有 secret-tool shim 固定本地 Docker socket 和 inspected container ID，访问任务专属容器真实 DBus/gnome-keyring；不装宿主软件、不读用户 keyring、不改 HOME，所有 key/password 仅 stdin/内存。此为实际 factory/default backend 模块证据，不是 GUI 产品 E2E。
+
+侧车入口 `scripts/secret-service-sidecar-component.ts` 单独验证当前加密 vault 的真实 backend create/get、daemon 重启、新 Host Node 进程恢复和无明文；镜像复用已核验 fea7c2…，不是把整个 C/Python 仓库搬入容器。原始宿主缺后端记录仍成立，容器后端不代表宿主已配置。
+
+新实际账户入口 `scripts/product-account-component.ts` 已准备，使用新 C factory 与 user Remote、固定 B HTTPS relay、G 实际 OAuth/DPoP 及默认 backend；需显式当前 A runtime aliases、冻结 native SHA 与 G fresh window。其运行结果按实际 source/hash 另记，不用旧直接 PapClient/managed-callback helper 替代。

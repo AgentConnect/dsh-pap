@@ -15,7 +15,12 @@
     "./management-remote": "./lib/management-remote.js",
     "./remote": "./lib/remote.js",
     "./tools": "./lib/tools.js",
-    "./product-api": "./lib/product-api.js"
+    "./product-api": "./lib/product-api.js",
+    "./client": {
+      "types": "./lib/client/index.d.ts",
+      "default": "./lib/browser-client.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "lib",
@@ -24,7 +29,7 @@
     "docs"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "npm run build && tsx --test tests/*.test.ts",
     "test:native-component": "tsx scripts/native-component.ts",
@@ -34,7 +39,11 @@
     "test:keyring-container": "node scripts/keyring-container/run.mjs",
     "test:p22": "npm run typecheck && tsx --test tests/cooldown-challenge.test.ts tests/client.test.ts tests/network-store.test.ts",
     "test:relay-native-account-component": "tsx scripts/relay-native-frontvia-component.ts",
-    "test:product": "tsx --test tests/product.test.ts"
+    "test:product": "tsx --test tests/product.test.ts",
+    "test:client": "npm run build && tsx --test tests/client-ui.test.ts",
+    "test:product-native-component": "tsx scripts/product-native-component.ts",
+    "test:sidecar": "npm run build && tsx scripts/secret-service-sidecar-component.ts",
+    "test:product-account-component": "tsx scripts/product-account-component.ts"
   },
   "dependencies": {
     "proper-lockfile": "4.1.2",
@@ -42,17 +51,40 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-tools": "0.1.5-rc.2",
     "@deepseek-ai/dsh-typert-protocol": "0.1.5-rc.2",
     "@deepseek-ai/dsh-typert-registry": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-tools": "0.1.5-rc.2"
+    "@deepseek-ai/dsh-api-remotes": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-connection": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-layout": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.5-rc.2",
+    "react": "18.3.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.2",
     "@deepseek-ai/cordis-plugin-loader": "1.0.3",
+    "@deepseek-ai/dsh-api-remotes": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-connection": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-store": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-layout": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.5-rc.2",
     "@deepseek-ai/dsh-typert-protocol": "0.1.5-rc.2",
     "@deepseek-ai/dsh-typert-registry": "0.1.5-rc.2",
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/react": "16.3.1",
+    "@types/jsdom": "21.1.7",
     "@types/node": "24.3.0",
     "@types/proper-lockfile": "4.1.4",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "esbuild": "0.25.12",
+    "jsdom": "26.1.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
     "tsx": "4.20.6",
     "typescript": "6.0.3",
     "zod": "4.6.2"
@@ -63,6 +95,16 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
     }
   },
   "peerDependenciesMeta": {
@@ -73,6 +115,27 @@
       "optional": true
     },
     "@deepseek-ai/dsh-tools": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-api-remotes": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-connection": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-renderer": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-layout": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-settings": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-slots": {
+      "optional": true
+    },
+    "react": {
       "optional": true
     }
   }

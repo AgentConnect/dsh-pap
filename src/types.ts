@@ -48,6 +48,8 @@ export interface PapState {
   retirements: Record<string, { subjectRef: string; key: KeyRef }>;
   /** User-managed operation permissions; protected by the same encrypted store and lock. */
   product?: { operations: Record<string, ProductOperationApproval> };
+  /** Private response-redaction tombstones, stored only inside the AES-GCM state. Never a grant. */
+  credentialVault?: { version: 1; completeness: 'complete'|'legacy_incomplete'; entries: Record<string, string>; blocked: boolean };
 }
 export interface Operation { url: string; method?: string; headers?: Record<string, string>; body?: string; resource?: string; scopes?: string[]; idempotencyKey?: string }
 export interface HttpResponse { status: number; headers: Record<string, string>; body: Uint8Array; url: string }

@@ -1,6 +1,8 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { asCooldownKey, assertCooldownElapsed, cooldownError, recordCooldown, remainingCooldownMs, resourceCooldownKey, responseHeader } from './cooldown.js';
 import { protocolFailure } from './auth-challenge.js';
+import type { CredentialObservation } from './credential-history.js';
+import { archiveCredentials } from './credential-history.js';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { PapDiscovery } from './discovery.js';
 import { PapError, requirePap, type PapAuthHint } from './errors.js';
@@ -21,7 +23,7 @@ export interface PapDispatchControl {
   signal?: AbortSignal;
   assertAllowed?: (state: PapState) => void;
   /** Host-only in-memory response redaction set; never register this callback on a wire surface. */
-  captureSecrets?: (values: readonly string[]) => void;
+  captureSecrets?: (values: readonly string[], credentials?: CredentialObservation) => void;
 }
 function authenticationError(code: string | undefined, hint?: PapAuthHint): PapError {
   if (code === 'insufficient_scope' || code === 'invalid_scope' || code === 'invalid_target' || code === 'invalid_client' || code === 'invalid_token' || code === 'invalid_dpop_proof' || code === 'unauthorized_client') return new PapError(code, undefined, hint);
@@ -281,7 +283,7 @@ export class PapClient {
           const currentSession = this.session(current, sessionRef);
           requirePap(this.company(current, subject.companyRef).generation === company.generation && currentSession.generation === session.generation && current.delegations[subject.ref]?.generation === delegation.generation, 'state_conflict');
           if (grant) { this.assertAccountEpoch(current, subject, grant.accountSlot, grant.accountEpoch); requirePap(current.grants[grant.ref]?.generation === grant.generation && current.grants[grant.ref]?.status === 'active', 'state_conflict'); }
-          control.captureSecrets?.([sessionJwt, sentHeaders.dpop, sentHeaders.authorization, grant?.accessToken, grant?.refreshToken, subject.userId, subject.agentId, session.sid].filter((value): value is string => Boolean(value)));
+          control.captureSecrets?.([sessionJwt, sentHeaders.dpop, sentHeaders.authorization, grant?.accessToken, grant?.refreshToken, subject.userId, subject.agentId, session.sid].filter((value): value is string => Boolean(value)), grant ? { accessToken: grant.accessToken, refreshToken: grant.refreshToken, accessExpiresInMs: grant.expiresAt === undefined ? undefined : Math.max(0, grant.expiresAt - this.clock()) } : undefined);
           const response = await this.transport.request(url, { method, headers: sentHeaders, body: frozen.body, signal: controller.signal });
           if (response.status === 429) recordCooldown(current, cooldownKey, response, this.clock());
           return response;
@@ -373,6 +375,7 @@ export class PapClient {
       const grant = this.parseGrant(result, tx, tx.dpopKey);
       requirePap(grant.refreshToken, 'oauth_error');
       const committed = await this.store.transaction(current => {
+        archiveCredentials(current, [grant.accessToken,grant.refreshToken]);
         const subject = this.subject(current, tx.subjectRef); const active = current.transactions[tx.ref]; const slot = current.accountSlots[tx.accountSlot];
         const valid = active?.status === 'exchanging' && active.expiresAt > this.clock() && slot?.epoch === tx.accountEpoch && !slot.signedOut && this.sameUser(current, slot.subjectRef, subject);
         if (valid) current.grants[grant.ref] = grant;
@@ -398,10 +401,12 @@ export class PapClient {
     requirePap(scope.length > 0 && scope.every(x => tx.scope.includes(x)), 'insufficient_scope');
     requirePap(body.expires_in === undefined || typeof body.expires_in === 'number' && Number.isFinite(body.expires_in) && body.expires_in > 0, 'oauth_error');
     requirePap(body.refresh_token === undefined || typeof body.refresh_token === 'string' && body.refresh_token.length > 0 && body.refresh_token.length <= 65536, 'oauth_error');
-    return { ref: prior?.ref ?? id('grant'), subjectRef: tx.subjectRef, accountSlot: tx.accountSlot, issuer: tx.issuer, clientId: tx.clientId, resource: tx.resource, scope,
+    const grant: Grant = { ref: prior?.ref ?? id('grant'), subjectRef: tx.subjectRef, accountSlot: tx.accountSlot, issuer: tx.issuer, clientId: tx.clientId, resource: tx.resource, scope,
       accessToken: body.access_token, refreshToken: body.refresh_token as string | undefined ?? prior?.refreshToken, tokenType: type, dpopKey,
       expiresAt: body.expires_in === undefined ? undefined : this.clock() + Number(body.expires_in) * 1000,
       usableUntil: this.clock() + 86400000, accountEpoch: tx.accountEpoch, generation: (prior?.generation ?? 0) + 1, status: 'active' };
+    this.options.observeCredentials?.({ accessToken: grant.accessToken, refreshToken: grant.refreshToken, accessExpiresInMs: body.expires_in === undefined ? undefined : Number(body.expires_in) * 1000 });
+    return grant;
   }
   private async tokenRequest(subject: Subject, company: Company, resource: string, accountSlot: string, key: KeyRef | undefined, fields: Record<string,string>, control: AccountRequestControl): Promise<HttpResponse> {
     requirePap(company.issuer, 'unsupported_sign_in'); const cooldownKey = asCooldownKey(company.companyId, company.issuer);
@@ -429,9 +434,15 @@ export class PapClient {
       await this.store.transaction(async state => {
         try { await lease.assertActive(); } catch { throw new PapError('permission_denied'); }
         this.assertWaitActive(state, context); assertCooldownElapsed(state, cooldownKey, this.clock());
+        archiveCredentials(state, [fields.refresh_token, control.purpose === 'revoke' ? fields.token : undefined]);
         sent = this.transport.request(target, { method: 'POST', headers: signed.headers, body: signed.body }).then(response => ({ response }), () => ({ failed: true as const }));
       });
       const outcome = await sent!; requirePap(outcome.response && !outcome.failed, 'request_uncertain'); const result = outcome.response;
+      if (control.purpose !== 'revoke' && result.status === 200) {
+        const received = parseJson(result);
+        const values = [received.access_token,received.refresh_token].filter((value): value is string => typeof value === 'string' && value.length > 0 && value.length <= 65536);
+        if (values.length) await this.store.transaction(state => archiveCredentials(state,values));
+      }
       if (result.status === 429) { await this.store.transaction(state => recordCooldown(state, cooldownKey, result, this.clock())); throw cooldownError(await this.store.read(), cooldownKey, this.clock()); }
       requirePap(result.status < 300 || result.status >= 400, 'redirect_blocked');
       const failure = protocolFailure(result, currentCompany, resource, key ? 'DPoP' : undefined);
@@ -473,6 +484,7 @@ export class PapClient {
       const response = await this.tokenRequest(subject, company, claimed.resource, claimed.accountSlot, claimed.dpopKey, { grant_type: 'refresh_token', refresh_token: claimed.refreshToken!, resource: claimed.resource, scope: claimed.scope.join(' ') }, { scopes: claimed.scope, accountEpoch: claimed.accountEpoch, sessionRef, grantRef: claimed.ref, grantGeneration: claimed.generation });
       const next = this.parseGrant(response, claimed, claimed.dpopKey, claimed);
       const committed = await this.store.transaction(current => {
+        archiveCredentials(current, [claimed.accessToken,claimed.refreshToken,next.accessToken,next.refreshToken]);
         const grant = current.grants[grantRef];
         if (grant?.generation === claimed.generation && grant.status === 'refreshing' && current.accountSlots[claimed.accountSlot]?.epoch === claimed.accountEpoch && !current.accountSlots[claimed.accountSlot]?.signedOut) { current.grants[grantRef] = next; return true; }
         if (grant && ['signed_out','revocation_pending'].includes(grant.status) && next.refreshToken) {
@@ -498,7 +510,7 @@ export class PapClient {
         tx.status = 'cancelled'; tx.verifier = ''; delete tx.callbackRef;
       }
       const grants = Object.values(state.grants).filter(x => this.sameUser(state, x.subjectRef, subject) && x.accountSlot === accountSlot && x.status !== 'signed_out');
-      for (const grant of grants) { if (grant.status === 'refreshing') refreshInFlight = true; grant.status = grant.refreshToken ? 'revocation_pending' : 'signed_out'; grant.accessToken = ''; grant.generation++; }
+      for (const grant of grants) { archiveCredentials(state, [grant.accessToken,grant.refreshToken]); if (grant.status === 'refreshing') refreshInFlight = true; grant.status = grant.refreshToken ? 'revocation_pending' : 'signed_out'; grant.accessToken = ''; grant.generation++; }
       for (const session of Object.values(state.sessions)) if (this.sameUser(state, session.subjectRef, subject) && session.accountSlot === accountSlot) { delete session.accountSlot; session.generation++; }
       return grants;
     });

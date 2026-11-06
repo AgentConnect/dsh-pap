@@ -10,9 +10,10 @@ import { PapError, requirePap, type PapAuthHint } from './errors.js';
 import { KeyringSecretStore } from './keyring.js';
 import { DeviceCallbackHandoff } from './callback-handoff.js';
 import { PAP_CONSUMER, PAP_MANAGER, PAP_TOOLS, identityReferenceSchema, managementRequestSchema, operationRequestSchema, type PapHostConsumer, type PapManagementRequest, type ProductResult } from './product-api.js';
-import { assertApproval, findOperation, prepareOperation, privateValues, publicOperations, publicResponse } from './product-operations.js';
+import { assertApproval, findOperation, prepareOperation, privateValues, publicOperations, publicResponse, sanitizePublicValue } from './product-operations.js';
 import { httpsUrl, id, sha256 } from './util.js';
 import { strictJson } from './strict-json.js';
+import { CredentialHistory } from './credential-history.js';
 
 export interface PapPluginConfig {
   /** Explicit opt-in; loading an unconfigured bundle performs no discovery or signing. */
@@ -53,6 +54,7 @@ export class PapService extends Service {
   private lastError?: string;
   private readonly ready: Promise<void>;
   private readonly authHints = new Map<string, PapAuthHint>();
+  private readonly credentialHistory = new CredentialHistory();
   private changing = false;
   constructor(ctx: Context, private readonly config: PapPluginConfig = {}) {
     super(ctx, 'pap');
@@ -122,11 +124,19 @@ export class PapService extends Service {
         getOrCreateEncryptionKey: namespace => protectedSecrets.getOrCreateEncryptionKey(profileNamespace + namespace),
       };
       const management = async (transactionId?: string, callbackRef?: string) => {
-        await consumer.assertActive(); const state = await next!.store.read();
-        const tx = transactionId ? state.transactions[transactionId] : Object.values(state.transactions).find(value => value.callbackRef === callbackRef);
+        await consumer.assertActive(); let state = await next!.store.read();
+        let tx = transactionId ? state.transactions[transactionId] : Object.values(state.transactions).find(value => value.callbackRef === callbackRef);
         requirePap(tx && tx.status === 'pending' && tx.expiresAt > Date.now(), 'invalid_authorization_response');
-        const subject = state.subjects[tx.subjectRef]; const company = subject && state.companies[subject.companyRef];
+        let subject = state.subjects[tx.subjectRef]; let company = subject && state.companies[subject.companyRef];
         requirePap(company && company.issuer === tx.issuer && tx.clientId === binding.clientId, 'permission_denied');
+        if(company.expiresAt<=Date.now()) {
+          await next!.resolvePapCompany(company.domain);await consumer.assertActive();state=await next!.store.read();
+          tx=transactionId?state.transactions[transactionId]:Object.values(state.transactions).find(value=>value.callbackRef===callbackRef);
+          requirePap(tx&&tx.status==='pending'&&tx.expiresAt>Date.now(),'invalid_authorization_response');subject=state.subjects[tx.subjectRef];company=subject&&state.companies[subject.companyRef];
+          requirePap(company&&company.issuer===tx.issuer&&tx.clientId===binding.clientId,'permission_denied');
+        }
+        const latest=Object.values(state.companies).filter(value=>value.domain===company.domain).sort((left,right)=>right.generation-left.generation)[0];
+        requirePap(latest?.companyId===company.companyId&&latest.issuer===tx.issuer,'namespace_changed');
         const target = await protocolHost.acquire(binding, company, 'pap_account', tx.resource, undefined, tx.scope);
         requirePap(target.targetRef, 'permission_denied');
         return consumer.callbackManagementFor({ identityRef: reference, policyRef: this.config.policyRef!, targetRef: target.targetRef });
@@ -135,7 +145,7 @@ export class PapService extends Service {
         register: async input => { const driver = await management(input.transactionId); try { return await new DeviceCallbackHandoff(driver).register(input); } finally { driver.dispose(); } },
         collect: async callbackRef => { const driver = await management(undefined, callbackRef); try { return await new DeviceCallbackHandoff(driver).collect(callbackRef); } finally { driver.dispose(); } },
       };
-      next = new PapClient({ stateRoot: join(this.config.stateRoot!, `identity-${sha256(JSON.stringify(binding))}`), binding, identityHost: protocolHost, secretStore: secrets, callbackHandoff: handoff }, host?.transport ?? new SafeHttpsTransport());
+      next = new PapClient({ stateRoot: join(this.config.stateRoot!, `identity-${sha256(JSON.stringify(binding))}`), binding, identityHost: protocolHost, secretStore: secrets, callbackHandoff: handoff, observeCredentials: credentials => this.credentialHistory.observe(credentials) }, host?.transport ?? new SafeHttpsTransport());
       await next.recover(); await consumer.assertActive(); requirePap(!this.stopped, 'disconnected');
       if (persist) await this.persistSelection(reference);
       await consumer.assertActive(); requirePap(!this.stopped, 'disconnected');
@@ -146,14 +156,31 @@ export class PapService extends Service {
   private async engine(): Promise<PapClient> {
     await this.ready; requirePap(!this.stopped, 'disconnected'); requirePap(this.client, 'not_configured'); await (await this.consumer()).assertActive(); return this.client;
   }
+  private async runPublic(operation: () => Promise<unknown>): Promise<ProductResult> {
+    const result = await publicResult(operation);
+    if (this.stopped) return {ok:false,error:{code:'disconnected'}};
+    try { return sanitizePublicValue(result,this.credentialHistory.values()) as ProductResult; }
+    catch { return {ok:false,error:{code:'credential_unavailable'}}; }
+  }
+  private publicValue(state: Parameters<typeof privateValues>[0], value: unknown, userAuthorizationUrl = false): unknown {
+    requirePap(state.credentialVault?.completeness === 'complete','credential_history_incomplete');
+    this.credentialHistory.restore(state);
+    const tokens=this.credentialHistory.values();
+    const sanitized=sanitizePublicValue(value,[...tokens,...privateValues(state)]);
+    if(userAuthorizationUrl&&value&&typeof value==='object'&&!Array.isArray(value)&&typeof (value as {authorizationUrl?:unknown}).authorizationUrl==='string') {
+      // Only this explicit user result may carry the AS-bound state/challenge.
+      (sanitized as Record<string,unknown>).authorizationUrl=sanitizePublicValue((value as {authorizationUrl:string}).authorizationUrl,[...tokens,...privateValues(state,false)]);
+    }
+    return sanitized;
+  }
   private assertCurrentEngine(engine: PapClient): void { requirePap(!this.stopped, 'disconnected'); requirePap(!this.changing && this.client === engine, 'state_conflict'); }
   private async catalog(enabledOnly: boolean, check: () => void): Promise<object[]> {
     check(); const engine = await this.engine(); const state = await engine.store.read();
     check(); this.assertCurrentEngine(engine); await (await this.consumer()).assertActive(); check(); this.assertCurrentEngine(engine);
-    return publicOperations(state, enabledOnly);
+    return this.publicValue(state,publicOperations(state, enabledOnly)) as object[];
   }
   async start(): Promise<void> { await this.ready; }
-  stop(): void { if (this.stopped) return; this.stopped = true; this.client?.close(); this.hostConsumer?.dispose(); }
+  stop(): void { if (this.stopped) return; this.stopped = true; this.client?.close(); this.hostConsumer?.dispose(); this.credentialHistory.dispose(); }
   async getStatus(includeManagementHints = false): Promise<object> {
     await this.ready;
     requirePap(!this.stopped, 'disconnected');
@@ -162,24 +189,35 @@ export class PapService extends Service {
     const engine = this.client; await (await this.consumer()).assertActive();
     const state = await engine.store.read();
     this.assertCurrentEngine(engine); await (await this.consumer()).assertActive(); this.assertCurrentEngine(engine);
-    return { state: 'ready', identity: this.selected, supportedSignIn: ['direct'],
-      ...(includeManagementHints ? { authenticationHints: [...this.authHints].map(([operationRef, hint]) => ({ operationRef, ...hint })) } : {}),
+    if (state.credentialVault?.completeness !== 'complete' || state.credentialVault.blocked) {
+      if (!includeManagementHints) throw new PapError(state.credentialVault?.completeness !== 'complete'?'credential_history_incomplete':'credential_unavailable');
+      return {state:state.credentialVault?.completeness !== 'complete'?'migration_required':'credential_unavailable',error:state.credentialVault?.completeness !== 'complete'?'credential_history_incomplete':'credential_unavailable',
+        accounts:[...new Map<string,{accountSlot:string;status:string;scopes:readonly string[]}>([...Object.values(state.grants).map(value=>[value.accountSlot,{accountSlot:value.accountSlot,status:value.status,scopes:[]}] as const),...Object.values(state.transactions).map(value=>[value.accountSlot,{accountSlot:value.accountSlot,status:'pending_login',scopes:[]}] as const)]).values()]};
+    }
+    return this.publicValue(state,{ state: 'ready', identity: this.selected, supportedSignIn: ['direct'],
+      ...(includeManagementHints ? { authenticationHints: [...this.authHints].map(([operationRef, hint]) => ({ operationRef, ...hint })),
+        pendingSignIns: Object.values(state.transactions).filter(value => value.status === 'pending' && value.expiresAt > Date.now()).map(value => ({ transactionRef:value.ref, accountSlot:value.accountSlot, ...(state.subjects[value.subjectRef]?{companyRef:state.subjects[value.subjectRef]!.companyRef}:{}), expiresAt:value.expiresAt })) } : {}),
       companies: Object.values(state.companies).map(value => ({ companyRef: value.ref, name: value.name, authMode: value.authMode, scopes: value.scopes })),
       sessions: Object.values(state.sessions).map(value => ({ sessionRef: value.ref, ...(state.subjects[value.subjectRef] ? { companyRef: state.subjects[value.subjectRef]!.companyRef } : {}), connected: value.connected, account: Boolean(value.accountSlot), ...(value.accountSlot ? { accountSlot: value.accountSlot } : {}) })),
-      accounts: Object.values(state.grants).map(value => ({ accountSlot: value.accountSlot, status: value.status, scopes: value.scope })),
-    };
+      accounts: Object.values(state.grants).map(value => ({ accountSlot: value.accountSlot, ...(state.subjects[value.subjectRef] ? { companyRef:state.subjects[value.subjectRef]!.companyRef } : {}), status: value.status, scopes: value.scope,canRefresh:value.status==='active'&&Boolean(value.refreshToken) })),
+    }) as object;
   }
   /** The installed user-only Typert manager receives the management facade. */
   acquireManagement(context: Context): { status(): Promise<ProductResult>; operations(): Promise<ProductResult>; execute(input: unknown): Promise<ProductResult> } {
     this.assertInstalled(context, PAP_MANAGER); const check = () => this.assertInstalled(context, PAP_MANAGER);
     return Object.freeze({
-      status: () => publicResult(async () => { check(); const result = await this.getStatus(true); check(); return result; }),
-      operations: () => publicResult(() => this.catalog(false, check)),
-      execute: input => publicResult(async () => {
+      status: () => this.runPublic(async () => { check(); const result = await this.getStatus(true); check(); return result; }),
+      operations: () => this.runPublic(() => this.catalog(false, check)),
+      execute: input => this.runPublic(async () => {
         check(); const parsed = managementRequestSchema.safeParse(input); requirePap(parsed.success, 'permission_denied'); const previous = this.client;
         const result = await this.manage(parsed.data, check); check();
         if (parsed.data.action !== 'identity/select' && previous) { this.assertCurrentEngine(previous); await (await this.consumer()).assertActive(); check(); this.assertCurrentEngine(previous); }
-        return result;
+        const current = this.client;
+        if (!current) return result;
+        const state = await current.store.read(); check(); this.assertCurrentEngine(current); await (await this.consumer()).assertActive(); check(); this.assertCurrentEngine(current);
+        if (parsed.data.action==='account/sign-out' && state.credentialVault?.completeness!=='complete') return result;
+        if (parsed.data.action==='identity/select' && state.credentialVault?.completeness!=='complete') return result;
+        return this.publicValue(state,result,parsed.data.action==='account/sign-in');
       }),
     });
   }
@@ -187,22 +225,27 @@ export class PapService extends Service {
   acquireTools(context: Context): { status(): Promise<ProductResult>; operations(): Promise<ProductResult>; request(input: unknown, signal?: AbortSignal): Promise<ProductResult> } {
     this.assertInstalled(context, PAP_TOOLS); const check = () => this.assertInstalled(context, PAP_TOOLS);
     return Object.freeze({
-      status: () => publicResult(async () => { check(); const result = await this.getStatus(); check(); return result; }),
-      operations: () => publicResult(() => this.catalog(true, check)),
-      request: (input, signal) => publicResult(async () => {
+      status: () => this.runPublic(async () => { check(); const result = await this.getStatus(); check(); return result; }),
+      operations: () => this.runPublic(() => this.catalog(true, check)),
+      request: (input, signal) => this.runPublic(async () => {
         check(); const parsed = operationRequestSchema.safeParse(input); requirePap(parsed.success, 'permission_denied');
-        const engine = await this.engine(); const snapshot = await engine.store.read(); const prepared = prepareOperation(snapshot, parsed.data);
+        const engine = await this.engine(); const pin = this.credentialHistory.begin();
+        try {
+        const snapshot = await engine.store.read(); requirePap(snapshot.credentialVault?.completeness==='complete','credential_history_incomplete'); const prepared = prepareOperation(snapshot, parsed.data);
+        this.credentialHistory.restore(snapshot);
+        for (const grant of Object.values(snapshot.grants)) { this.credentialHistory.rememberIfAbsent(grant.accessToken); if (grant.refreshToken) this.credentialHistory.rememberIfAbsent(grant.refreshToken); }
         const checkRequest = () => { check(); this.assertCurrentEngine(engine); };
-        checkRequest();
+        checkRequest(); this.credentialHistory.assertUsable();
         const sentSecrets = new Set(privateValues(snapshot));
         try {
           const response = await engine.dispatchPap(prepared.approval.sessionRef, prepared.operation, { signal,
-            assertAllowed: state => { checkRequest(); assertApproval(state, parsed.data.operationRef, prepared.approval); },
-            captureSecrets: values => { for (const value of values) sentSecrets.add(value); },
+            assertAllowed: state => { checkRequest(); this.credentialHistory.assertUsable(); assertApproval(state, parsed.data.operationRef, prepared.approval); },
+            captureSecrets: (values, credentials) => { for (const value of values) sentSecrets.add(value); if (credentials) this.credentialHistory.observe(credentials); this.credentialHistory.assertUsable(); },
           });
           checkRequest(); await (await this.consumer()).assertActive(); checkRequest();
           const current = await engine.store.read(); assertApproval(current, parsed.data.operationRef, prepared.approval);
-          const secrets = [...sentSecrets, ...privateValues(current)];
+          this.credentialHistory.restore(current);
+          const secrets = [...sentSecrets, ...privateValues(current), ...this.credentialHistory.values()];
           checkRequest(); await (await this.consumer()).assertActive(); checkRequest();
           this.authHints.delete(parsed.data.operationRef); return publicResponse(response, secrets);
         } catch (error) {
@@ -212,13 +255,15 @@ export class PapService extends Service {
           }
           throw error;
         }
+        } finally { this.credentialHistory.end(pin); }
       }),
     });
   }
   private async manage(input: PapManagementRequest, check: () => void): Promise<unknown> {
     await this.ready; check();
-    if (input.action === 'identity/select') { await this.select(input.reference, true); check(); return this.getStatus(); }
+    if (input.action === 'identity/select') { await this.select(input.reference, true); check(); return this.getStatus(true); }
     const engine = await this.engine(); check();
+    if (input.action!=='account/sign-out') requirePap((await engine.store.read()).credentialVault?.completeness==='complete','credential_history_incomplete');
     if (input.action === 'company/discover') return engine.resolvePapCompany(input.domain);
     if (input.action === 'session/connect') {
       const subject = await engine.getOrCreatePapUser(input.companyRef, input.mode ?? 'regular', true); check();
@@ -245,7 +290,21 @@ export class PapService extends Service {
     }
     if (input.action === 'account/collect') return engine.collectSignIn(input.transactionRef);
     const state = await engine.store.read(); const account = Object.values(state.grants).find(value => value.accountSlot === input.accountSlot) ?? Object.values(state.transactions).find(value => value.accountSlot === input.accountSlot);
-    requirePap(account, 'reauthorization_required'); return engine.signOutAccount(account.subjectRef, input.accountSlot);
+    requirePap(account, 'reauthorization_required');
+    if(input.action==='account/refresh') {
+      const grant=state.grants[account.ref];requirePap(grant?.status==='active'&&grant.refreshToken,'reauthorization_required');
+      const subject=state.subjects[grant.subjectRef];const company=subject&&state.companies[subject.companyRef];const slot=state.accountSlots[input.accountSlot];
+      requirePap(subject&&company&&company.companyId===subject.companyId&&grant.issuer===company.issuer&&grant.clientId===this.binding?.clientId&&JSON.stringify(subject.binding)===JSON.stringify(this.binding)&&company.routes.some(route=>route.resource===grant.resource),'permission_denied');
+      requirePap(slot&&!slot.signedOut&&slot.epoch===grant.accountEpoch,'reauthorization_required');
+      const sessions=Object.values(state.sessions).filter(session=>session.connected&&session.accountSlot===input.accountSlot).map(session=>({ref:session.ref,generation:session.generation}));
+      check();this.assertCurrentEngine(engine);await (await this.consumer()).assertActive();check();
+      await engine.refreshAccountGrant(grant.ref);
+      const current=await engine.store.read();check();this.assertCurrentEngine(engine);await (await this.consumer()).assertActive();check();this.assertCurrentEngine(engine);
+      requirePap(current.accountSlots[input.accountSlot]?.epoch===slot.epoch&&!current.accountSlots[input.accountSlot]?.signedOut&&current.grants[grant.ref]?.status==='active','reauthorization_required');
+      requirePap(current.companies[subject.companyRef]?.companyId===company.companyId&&current.companies[subject.companyRef]?.issuer===company.issuer&&sessions.every(session=>current.sessions[session.ref]?.connected&&current.sessions[session.ref]?.generation===session.generation&&current.sessions[session.ref]?.accountSlot===input.accountSlot),'state_conflict');
+      return {status:'active'};
+    }
+    return engine.signOutAccount(account.subjectRef, input.accountSlot);
   }
 }
 export function apply(ctx: Context, config: PapPluginConfig = {}): PapService { return new PapService(ctx, config); }

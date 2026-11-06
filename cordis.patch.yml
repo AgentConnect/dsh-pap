@@ -1,5 +1,7 @@
 # Explicit opt-in configuration is owned by the profile Host. No implicit environment binding.
 - insert:
+    - id: pap-client-declaration
+      name: '@agentconnect/dsh-pap'
     - id: pap
       name: '@agentconnect/dsh-pap/plugin'
       config:

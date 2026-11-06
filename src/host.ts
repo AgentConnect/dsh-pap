@@ -1,4 +1,5 @@
 import type { AsMetadata, Binding, Company, IdentityRef, KeyRef, KeyScope, PublicJwk } from './types.js';
+import type { CredentialObservation } from './credential-history.js';
 
 /** Same-process Host capability. Never expose through Remote or tools. */
 export interface PapSigningLease {
@@ -35,5 +36,7 @@ export interface PapHostOptions {
   callbackHandoff?: CallbackHandoff; clock?: () => number;
   /** Maximum local inline cooldown wait, 0..5000ms; this never shortens the persisted server fence. */
   inlineCooldownWaitMs?: number;
+  /** Host-only observer, must not throw or log; used for private response-redaction history. */
+  observeCredentials?: (credentials: CredentialObservation) => void;
 }
 export type { AsMetadata, IdentityRef };

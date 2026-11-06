@@ -4,7 +4,7 @@ export type PapErrorCode =
   | 'delegation_blocked' | 'invalid_session' | 'session_ended' | 'invalid_token'
   | 'reauthorization_required' | 'unsupported_sign_in' | 'invalid_authorization_response'
   | 'insufficient_scope' | 'unauthorized_client' | 'rate_limited' | 'request_uncertain'
-  | 'redirect_blocked' | 'invalid_client' | 'invalid_dpop_proof' | 'invalid_scope' | 'invalid_target' | 'oauth_error' | 'disconnected' | 'revocation_pending' | 'not_configured';
+  | 'redirect_blocked' | 'invalid_client' | 'invalid_dpop_proof' | 'invalid_scope' | 'invalid_target' | 'oauth_error' | 'disconnected' | 'revocation_pending' | 'not_configured' | 'credential_history_incomplete';
 
 export interface PapAuthHint { readonly scheme: 'Bearer' | 'DPoP'; readonly scope?: readonly string[]; readonly resourceMetadataUrl?: string }
 

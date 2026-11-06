@@ -26,6 +26,7 @@ export const managementRequestSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('account/sign-in'), sessionRef: ref, operationRef: ref, scopes: z.array(scope).min(1).max(64) }).strict(),
   z.object({ action: z.literal('account/collect'), transactionRef: ref }).strict(),
   z.object({ action: z.literal('account/sign-out'), accountSlot: ref }).strict(),
+  z.object({ action: z.literal('account/refresh'), accountSlot: ref }).strict(),
 ]);
 export type PapManagementRequest = z.infer<typeof managementRequestSchema>;
 export const operationRequestSchema = z.object({

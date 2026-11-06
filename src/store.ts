@@ -5,7 +5,8 @@ import lockfile from 'proper-lockfile';
 import type { HostSecretStore } from './host.js';
 import type { PapState } from './types.js';
 import { PapError, requirePap } from './errors.js';
-const empty = (): PapState => ({ schemaVersion: 1, generation: 0, companies: {}, subjects: {}, sessions: {}, delegations: {}, grants: {}, transactions: {}, nonces: {}, cooldowns: {}, retirements: {}, accountSlots: {}, delegationAttempts: {} });
+import { ensureCredentialVault } from './credential-history.js';
+const empty = (): PapState => ({ schemaVersion: 1, generation: 0, companies: {}, subjects: {}, sessions: {}, delegations: {}, grants: {}, transactions: {}, nonces: {}, cooldowns: {}, retirements: {}, accountSlots: {}, delegationAttempts: {},credentialVault:{version:1,completeness:'complete',entries:{},blocked:false} });
 
 /** Encrypted, cross-process serialized transactions. The master key stays in Host secret storage. */
 export class PapStore {
@@ -49,6 +50,7 @@ export class PapStore {
           const slot = state.accountSlots[tx.accountSlot] ??= { subjectRef: tx.subjectRef, epoch: tx.accountEpoch, signedOut: false };
           if (slot.signedOut) { tx.status = 'cancelled'; tx.verifier = ''; delete tx.callbackRef; }
         }
+        ensureCredentialVault(state);
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') state = empty();

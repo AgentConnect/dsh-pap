@@ -151,3 +151,24 @@ A/H 只读 source review 在 7bd 候选发现实际生命周期缺口：仅定�
 当前 `npm run typecheck && npx tsx --test tests/product.test.ts`：18/18。新增直接断言包括实际 Loader unload 的 transport abort（honor/ignore两模式）、迟到结果不返、selection 持久化挂起时卸载后 next.close、自动 refresh→实际资源响应→dispatch返回挂起→用户 sign-out 清空新 Token→恢复后的未知 key/value/message 回显仍脱敏，以及同 identity/operation approval 不变时重选仍拒旧 engine 结果。C/protocol/callback 仍是明确单位替身；这些用例不冒充新 C factory/native 或产品 E2E。
 
 只读复核再收口同族只读入口：getStatus/catalog 在 protected-key/Store await 后也检查当前 engine/selection、真实 C active 与调用 Context；user/tool status facade 在 await 后复查，manager.execute 通用尾检避免慢管理动作返回卸载前结果。受控 key resolver 挂起期间实际 Loader 卸载，四种 user/tool status/operations 均拒返回旧 ready/catalog；另一次 provider generation 在挂起期间变化，恢复后拒绝旧 status。当前 `npm run typecheck && npx tsx --test tests/product.test.ts` 为 **23/23**。A 对最终源码只读安全复核未发现剩余确定阻塞，测试归 F owner 执行；不将其称为 C factory/产品全链审计通过。
+
+## 产品入口后续：S15 持久闭环、用户 settings 与真实默认 backend
+
+后续 Root 实际复核发现两个历史边界，均先复现：旧 AT 首请求401引发 refresh，下一请求 echo 仍有效旧 AT 时单请求 redaction set 不足；加 service 内历史后，实际 Loader disable/enable 创建新 engine 仍会漏旧值。两个失败结果不计通过。并纠正早先 owner“重启”用例只 update 相同 config 的不足：Loader 不会因此重启；现明确 disable/enable，assert 旧 stopped、新 engine 引用不同，才计恢复证明。旧2113与23项记录保留其当时范围。
+
+现在私有 AT/RT 历史在既有 AES-GCM PapStore credentialVault 内，不另建密钥服务或明文 vault。新AS response 在解析/提交 grant 前先持锁归档；发送 refresh/revoke、替换及清 Token 前也原子保留旧值。运行内已知寿命使用单调时间与所有在途响应 pin；跨重启剩余寿命无法证明的 tombstone 保守保留，不伪造24h AS/RT期限。4096值/4MiB预算满即持续 fail-closed，不驱逐仍可能有效项，也不因用户重选同identity清历史。所有 tool/user 动态状态、Company名称、operation路径和业务输出都做已知秘密过滤；当前pending state默认过滤，只有明确User account/sign-in的authorizationUrl字段局部保留正常state/challenge。AT/RT是持久历史范围，已删除的旧nonce/verifier/claim/sid不宣称无限追踪或重构。
+
+Legacy规则由Root明确确认：无vault却有grant/slot、任意已处理或取消的账号tx、AS nonce/DPoP迹象，保守 legacy_incomplete；只 seed当前已知不等于补全未知。Agent请求和动态Company/catalog/status停止；user仅固定迁移状态、Host生成的account refs/闭合状态并可正常尝试revoke。最新logout/revoke不自动证明全部旧RT失效。无账号迹象的旧纯NoAS才迁移complete；fresh在首次AS请求前有complete marker。保留加密数据/epoch/cooldown，不wipe/newkey/弱confirmed参数；只记录独立受信Host运维的完整issuer/client/resource撤销事实前置，本轮没有新恢复UI或通用扫描器。
+
+用户明确的 account/refresh{accountSlot} 也已纳入闭合管理动作，输入无grantRef/URL/resource/scope/Token；核对当前binding/subject/Company/slot epoch/已有连接代次，调用既有真实refresh，再检查原Context、engine与C active。无RT或not-active拒绝，不自动重新授权；slow refresh期间实际Loader卸载不返回active。callback在Company discovery过期后先安全重新发现、检查namespace/tx，再重新获取真实C目标，不复活过期target。
+
+实际验证：
+
+- 最后一次受影响 owner 合计 **94/94**（client26、P22 19、storage4、history5、product32、UI8）；原生 `.artifacts/product-final-owner.tap`。此后新增hint一项仅复跑UI，不能把不同重叠轮次累加成整轮95。typecheck/build均通过，未执行fullsuite/System/E2E。
+- settings DOM与browser制品：明确identity选择、Company发现、Session、operation批准/撤销、浏览器点击/collect、refresh/logout、disabled/Cwaiting/legacy/error安全提示、实际settings.section注册；C身份只能经公开list+publicationStatus得到published且papSession=true的refs，无C审批/Native/DeviceAccess。浏览器bundle与输入图不含Host/Node模块，Host `lib/client.js`不被覆盖；浏览器入口是`lib/browser-client.js`。
+- 实际Desktop所装ClientModuleRegistry（entry SHA `a178c4b2d8adfb18d21e66337638aa66d08b57cc0f6325981678045aca380510`）完成root marker→locatePkgJson→browser export→serveBundle。marker没有pap/C/credentials能力；DOM与此gate分别记录，不当Desktop GUI已启动。
+- `scripts/product-native-component.ts` 新真正入口 `.artifacts/product-native-entry/second-run.json`（SHA `5113b33c85a1c723d2b150bf61cfcaa6685332f92c613b14ba6e5c459ea9f44b`）exit0：fresh实际C批准/Bstrict注册发布→同store真实C/Native/credentials/manager重开→实际F三entry+真实ToolRuntime→独立实际TLS Nodecrypto NoAS verifier，2条Delegation/Session验签、jti2、Token0、公发现无auth、批准前physical0、卸载后0。F仅提供网络transport，默认Keyring实item32bytes已查证，无memorySecret。F Host与C src pre/post一致，实际加载native e2c；对应helper为旧49.../strict c74...，后继test-onlyoptional origin/profile不反标为本次来源。该结果早于M12 availability新native，保持历史。
+- 上项首轮未显式A runtime aliases，freshpublication失败；原生结构输出保留first-run-failed.json且全清理。第二轮fresh Node用明确main/provider aliases→A bindings/node，Cordis/credentials仍official registry，唯一加载e2c。不是新API registry安装或署名remoteSigner。
+- 默认backend sidecar复用image `sha256:fea7c2a0f03570a8bc636c1d3c19505a79964bb0b7f573363d7473fe039aa72c`；固定本机`unix:///var/run/docker.sock`，CLI最小env，shim固化inspected containerId+privateDBus+closedargv，无Host HOME/DBus/keyring mount。current Keyring/PapStore/vault real create/get、密文、daemon restart、新Host Node与vault恢复4项过；预取消/启动中取消也清理且task container inventory不变。该后端容器不是宿主已配置。所有key/pass只stdin/内存/捕获stdout，无日志。
+
+上述native默认backend链结束已核C/F state、TLS server、SecretService/DBus/private state/container/shim全清理，HOME不变。新actual account产品链另由 `scripts/product-account-component.ts` 准备，严格使用fresh C factory与实际user Remote、defaultbackend、B固定HTTPS relay、G真实OAuth/DPoP，不使用旧直接new PapClient/managed callback helper。其新C/A M12候选及运行结果尚需单独绑定；不以NoAS或旧账户组件冒充此层通过。Desktop profile/renderer最终产品gate仍由Root执行。

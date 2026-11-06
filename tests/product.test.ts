@@ -37,7 +37,7 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
       const raw: ProtocolSignerLease = {
         targetRef,
         getOAuthClientIdentity: async () => ({ clientId: binding.clientId, algorithm: 'ES256', keyId: host.identityKid, publicJwk: host.identity.jwk, redirectUris: ['https://agent.example/pap-callback'] }),
-        assertActive: () => lease.assertActive(),
+        assertActive: async () => { requirePap(input.discovery.expiresAt>Date.now(),'permission_denied');await lease.assertActive(); },
         signOAuthClientAssertion: () => lease.signOAuthClientAssertion(),
         bindPapScope: input => { const ref = {}; scopes.set(ref, { owner: binding.ownerRef, company_id: company.companyId, user_id: input.userId, ...(input.accountSlot ? { account_slot: input.accountSlot } : {}) }); return ref; },
         createDelegatedKey: async (ref, operation) => publicKey(await lease.createDelegatedKey(scope(ref), operation)),
@@ -93,6 +93,15 @@ async function connected(f: Awaited<ReturnType<typeof fixture>>) {
   const operations = value(await f.manager.operations()) as unknown as Value[];
   const operation = operations.find(item => item.method === 'GET' && item.path === '/api/cart')!;
   return { company, session, operation };
+}
+async function accountConnection(f:Awaited<ReturnType<typeof fixture>>) {
+  const connectedState=await connected(f);const {operation,session,company}=connectedState;
+  const pending=value(await f.manager.manage({action:'account/sign-in',sessionRef:session.sessionRef,operationRef:operation.operationRef,scopes:['orders:read']}));
+  const authorize=new URL(pending.authorizationUrl);f.setResponse({state:authorize.searchParams.get('state')!,iss:f.transport.issuer,code:'unit-only-code'});
+  value(await f.manager.manage({action:'account/collect',transactionRef:pending.transactionRef}));
+  const account=value(await f.manager.manage({action:'session/connect',companyRef:company.companyRef,accountSlot:pending.accountSlot}));
+  value(await f.manager.manage({action:'operation/enable',operationRef:operation.operationRef,sessionRef:account.sessionRef,scopes:['orders:read']}));
+  return {...connectedState,pending,account,engine:(f.service as unknown as {client:PapClient}).client};
 }
 
 test('PAP product real Loader: disabled/unconfigured do not access secrets or network', async t => {
@@ -178,7 +187,8 @@ test('PAP product: encrypted operation permission and selected identity restore 
   const f = await fixture(t); const { operation, session } = await connected(f);
   value(await f.manager.manage({ action: 'operation/enable', operationRef: operation.operationRef, sessionRef: session.sessionRef })); value(await f.execute('pap_request', { operationRef: operation.operationRef }));
   const entry = [...f.loader.entries()].find(item => item.options.name === PAP_CONSUMER)!;
-  await f.loader.update(entry.id, { config: { ...f.config } }); await f.loader.await();
+  await f.loader.update(entry.id, { disabled:true }); await f.loader.update(entry.id, { disabled:false }); await f.loader.await();
+  assert.equal((f.service as any).stopped,true); assert.notEqual((f.ctx.pap as any).client,(f.service as any).client);
   value(await f.execute('pap_request', { operationRef: operation.operationRef }));
   const toolEntry = [...f.loader.entries()].find(item => item.options.name === PAP_TOOLS)!;
   const cached = f.tools.get('pap_request'); await f.loader.update(toolEntry.id, { disabled: true });
@@ -280,4 +290,84 @@ for (const surface of ['tool-status','tool-operations','user-status','user-opera
 test('PAP product: status rechecks actual C authority after a suspended protected-key read', async t => {
   const f = await fixture(t); await connected(f); const pause = f.pauseNextKeyRead(); t.after(pause.release);
   const status = f.execute('pap_status'); await pause.start; f.advanceProvider(); pause.release(); error(await status, 'provider_disposed');
+});
+for (const restart of [false,true]) test(`PAP product S15: a later response cannot echo a still-valid credential replaced by an earlier refresh (restart=${restart})`, async t => {
+  const f = await fixture(t, { mode: 'account' }); const { operation, session, company } = await connected(f);
+  const pending = value(await f.manager.manage({ action: 'account/sign-in', sessionRef: session.sessionRef, operationRef: operation.operationRef, scopes: ['orders:read'] }));
+  const authorize = new URL(pending.authorizationUrl); f.setResponse({ state: authorize.searchParams.get('state')!, iss: f.transport.issuer, code: 'unit-one-time-code' });
+  value(await f.manager.manage({ action: 'account/collect', transactionRef: pending.transactionRef }));
+  const account = value(await f.manager.manage({ action: 'session/connect', companyRef: company.companyRef, accountSlot: pending.accountSlot }));
+  value(await f.manager.manage({ action: 'operation/enable', operationRef: operation.operationRef, sessionRef: account.sessionRef, scopes: ['orders:read'] }));
+  let count = 0; const oldAccess = 'access-fixture'; const oldRefresh = 'refresh-fixture';
+  f.transport.override = (url, options) => {
+    if (url.endsWith('/token')) return jsonResponse(url, { access_token: 'unit-rotated-access', refresh_token: 'unit-rotated-refresh', token_type:'DPoP', expires_in:3600 });
+    if (url.endsWith('/api/cart')) {
+      count++; if (count === 1) return jsonResponse(url, { error:'invalid_token' }, 401);
+      if (count === 2) return jsonResponse(url, { ok:true });
+      assert(options?.headers?.authorization?.includes('unit-rotated-access'));
+      return jsonResponse(url, { unexpected:`message ${oldAccess} embedded`, [oldRefresh]:'unexpected-key' });
+    }
+  };
+  value(await f.execute('pap_request', { operationRef:operation.operationRef }));
+  if (restart) { const entry = [...f.loader.entries()].find(item => item.options.name === PAP_CONSUMER)!; await f.loader.update(entry.id, { disabled:true }); await f.loader.update(entry.id, { disabled:false }); await f.loader.await(); assert.equal((f.service as any).stopped,true); assert.notEqual((f.ctx.pap as any).client,(f.service as any).client); }
+  const visible = JSON.stringify(await f.execute('pap_request', { operationRef:operation.operationRef }));
+  assert(!visible.includes(oldAccess)); assert(!visible.includes(oldRefresh));
+});
+test('PAP product S15: known credentials in discovered Company names and operation paths never reach public metadata', async t=>{
+  const f=await fixture(t,{mode:'account'});const {session}=await accountConnection(f);const token='access-fixture';
+  f.transport.override=url=>url.endsWith('/poppy.json')?jsonResponse(url,{protocol_version:'0.3',organization:{name:`Company ${token}`,domain:'shop.example'},auth:{issuer:f.transport.issuer,scopes:{'orders:read':'Orders'}},apis:[{type:'openapi',url:'https://shop.example/openapi.json'}]}):url.endsWith('/openapi.json')?jsonResponse(url,{openapi:'3.1.0',servers:[{url:'https://shop.example'}],paths:{['/api/'+token]:{get:{}}}}):undefined;
+  const discovery=await f.manager.manage({action:'company/discover',domain:'shop.example'});assert(!JSON.stringify(discovery).includes(token));
+  const operations=value(await f.manager.operations()) as unknown as Value[];assert.equal(operations.length,1);assert(!JSON.stringify(operations).includes(token));
+  value(await f.manager.manage({action:'operation/enable',operationRef:operations[0]!.operationRef,sessionRef:session.sessionRef}));
+  for(const result of [await f.manager.status(),await f.execute('pap_status'),await f.execute('pap_operations')])assert(!JSON.stringify(result).includes(token));
+});
+test('PAP product S15: legacy account history is gated after seeding, normal revoke cannot certify unknown old tokens', async t=>{
+  const f=await fixture(t,{mode:'account'});const {engine,pending,operation}=await accountConnection(f);
+  await engine.store.transaction(state=>{delete state.credentialVault;});
+  const before=f.host.sessionCount;error(await f.execute('pap_request',{operationRef:operation.operationRef}),'credential_history_incomplete');assert.equal(f.host.sessionCount,before);
+  const user=value(await f.manager.status());assert.equal(user.state,'migration_required');assert.deepEqual(Object.keys(user).sort(),['accounts','error','state']);assert.equal(user.accounts[0].accountSlot,pending.accountSlot);
+  error(await f.execute('pap_status'),'credential_history_incomplete');error(await f.execute('pap_operations'),'credential_history_incomplete');
+  value(await f.manager.manage({action:'account/sign-out',accountSlot:pending.accountSlot}));
+  const state=await engine.store.read();assert.equal(state.credentialVault!.completeness,'legacy_incomplete');assert.equal(state.grants[Object.keys(state.grants)[0]!]!.status,'signed_out');
+  assert(!(await readFile(join(engine.store.root,'pap-state.enc'))).includes(Buffer.from('access-fixture')));
+});
+test('PAP product S15: cancelled legacy account transaction is evidence, while an untouched NoAS state migrates complete', async t=>{
+  const f=await fixture(t,{mode:'account'});const {session,operation}=await connected(f);
+  const pending=value(await f.manager.manage({action:'account/sign-in',sessionRef:session.sessionRef,operationRef:operation.operationRef,scopes:['orders:read']}));
+  const engine=(f.service as unknown as {client:PapClient}).client;
+  await engine.store.transaction(state=>{for(const tx of Object.values(state.transactions)){tx.status='cancelled';tx.verifier='';}delete state.credentialVault;});
+  assert.equal(value(await f.manager.status()).state,'migration_required');value(await f.manager.manage({action:'account/sign-out',accountSlot:pending.accountSlot}));
+  const g=await fixture(t);const no=await connected(g);const core=(g.service as unknown as {client:PapClient}).client;
+  await core.store.transaction(state=>{delete state.credentialVault;});assert.equal((await core.store.read()).credentialVault!.completeness,'complete');
+  value(await g.manager.manage({action:'operation/enable',operationRef:no.operation.operationRef,sessionRef:no.session.sessionRef}));value(await g.execute('pap_request',{operationRef:no.operation.operationRef}));
+});
+test('PAP product: only the user authorization URL may contain the pending state; public metadata cannot echo it',async t=>{
+  const f=await fixture(t,{mode:'account'});const {operation,session}=await connected(f);
+  const pending=value(await f.manager.manage({action:'account/sign-in',sessionRef:session.sessionRef,operationRef:operation.operationRef,scopes:['orders:read']}));const state=new URL(pending.authorizationUrl).searchParams.get('state')!;assert(state);
+  f.transport.override=url=>url.endsWith('/poppy.json')?jsonResponse(url,{protocol_version:'0.3',organization:{name:`Company ${state}`,domain:'shop.example'},auth:{issuer:f.transport.issuer,scopes:{'orders:read':'Orders'}},apis:[{type:'openapi',url:'https://shop.example/openapi.json'}]}):url.endsWith('/openapi.json')?jsonResponse(url,{openapi:'3.1.0',servers:[{url:'https://shop.example'}],paths:{['/api/'+state]:{get:{}}}}):undefined;
+  const discovery=await f.manager.manage({action:'company/discover',domain:'shop.example'});assert(!JSON.stringify(discovery).includes(state));const operations=value(await f.manager.operations()) as unknown as Value[];
+  value(await f.manager.manage({action:'operation/enable',operationRef:operations[0]!.operationRef,sessionRef:session.sessionRef}));
+  for(const output of [await f.manager.status(),await f.execute('pap_status'),await f.execute('pap_operations')])assert(!JSON.stringify(output).includes(state));
+  assert.equal(new URL(pending.authorizationUrl).searchParams.get('state'),state);assert(new URL(pending.authorizationUrl).searchParams.get('code_challenge'));
+});
+test('PAP product: explicit user account refresh uses its bound grant and rejects absent refresh without reauthorization',async t=>{
+  const f=await fixture(t,{mode:'account'});const {engine,pending}=await accountConnection(f);const before=f.transport.calls.filter(call=>call.url.endsWith('/token')).length;
+  assert.equal(value(await f.manager.manage({action:'account/refresh',accountSlot:pending.accountSlot})).status,'active');assert.equal(f.transport.calls.filter(call=>call.url.endsWith('/token')).length,before+1);
+  assert(!f.tools.has('pap_refresh'));assert.equal(value(await f.manager.status()).accounts[0].canRefresh,true);
+  await engine.store.transaction(state=>{for(const grant of Object.values(state.grants))delete grant.refreshToken;});
+  error(await f.manager.manage({action:'account/refresh',accountSlot:pending.accountSlot}),'reauthorization_required');assert.equal(f.transport.calls.filter(call=>call.url.endsWith('/token')).length,before+1);
+});
+test('PAP product: a slow user refresh cannot return active after actual Loader unload',async t=>{
+  const f=await fixture(t,{mode:'account'});const {pending}=await accountConnection(f);let entered!:()=>void;let release!:()=>void;const start=new Promise<void>(resolve=>entered=resolve);
+  f.transport.override=url=>url.endsWith('/token')?new Promise(resolve=>{release=()=>resolve(jsonResponse(url,{access_token:'unit-late-access',refresh_token:'unit-late-refresh',token_type:'DPoP',expires_in:3600}));entered();}):undefined;
+  const refreshing=f.manager.manage({action:'account/refresh',accountSlot:pending.accountSlot});await start;const entry=[...f.loader.entries()].find(item=>item.options.name===PAP_CONSUMER)!;
+  await f.loader.update(entry.id,{disabled:true});release();const result=await refreshing;assert.equal(result.ok,false);assert(!JSON.stringify(result).includes('unit-late'));assert(!JSON.stringify(result).includes('"status":"active"'));
+});
+test('PAP product: callback collection revalidates expired discovery before requesting a new C target',async t=>{
+  const f=await fixture(t,{mode:'account'});const {session,operation}=await connected(f);
+  const pending=value(await f.manager.manage({action:'account/sign-in',sessionRef:session.sessionRef,operationRef:operation.operationRef,scopes:['orders:read']}));
+  const authorize=new URL(pending.authorizationUrl);f.setResponse({state:authorize.searchParams.get('state')!,iss:f.transport.issuer,code:'unit-callback-code'});
+  const engine=(f.service as unknown as {client:PapClient}).client;await engine.store.transaction(state=>{for(const company of Object.values(state.companies))company.expiresAt=Date.now()-1;});
+  const before=f.transport.calls.filter(call=>call.url.endsWith('poppy.json')).length;value(await f.manager.manage({action:'account/collect',transactionRef:pending.transactionRef}));
+  assert.equal(f.transport.calls.filter(call=>call.url.endsWith('poppy.json')).length,before+1);assert.equal(f.counts.claimCount,1);
 });
