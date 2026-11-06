@@ -188,3 +188,13 @@ Legacy规则由Root明确确认：无vault却有grant/slot、任意已处理或�
 G独立核验真实公开metadata/JWKS各GET10，served字节SHA与实际B公开raw strings完全一致：`d67223640067a86017ee7e32afe4333adfb3792295f2d7d6266a857613b0ca20` / `796035da6c8f2a587ac8faa3b4046dda9251d8b4224af28ece484f82b9c8583a`；callback仅固定path1/error0，result/ledger无code/state/iss query或Token。G是handoff-only窗口owner checks0，不把历史16suite算本次重跑。
 
 消费者exit0后C/F临时state/SQL、Node relay、公开材料、SecretService/DBus/private tmpfs/container/shim全精确清理，HOME不变。G确认DB0/role0/process stopped，27432/29443无监听且ownedPG停止，guard已释放。B为实际production ASGI/fullmiddleware的逻辑HTTPS模块调用，Company为真实TLS/Rust/PG；没有GUI产品E2E、System Test、LLM runtime、共享部署、push或发布。Desktop正式profile/renderer最终验收另由Root owning。
+
+## 冻结 production43 后的 test-only 模块差额
+
+后继879eb4b与045ebf7仅新增测试，e65现有安装tar不重打。P19/P20/P21/P23/P24沿原fixture五组focused分别1/4/2/1/1通过，补same-grant双sid刷新、scope返回子集/empty/extra与unauthorized_client、第二次ended停止/validgrant保留、只选账号枚举全部RT、Company namespace旧身份/Token不迁移。P23第二resource行明确direct encrypted-storage fixture，不是实际AS多resource签发或Commerce隔离。G另补discovery/session差额5/5，B只读审过；执行命令、类型检查与G stdout provenance见 `.artifacts/pap-module-gap-final-summary.json`，不把不同轮次拼为新全套。
+
+P18后继script `p18-native-wire-component.ts`（SHA `4d636239a1549cf108a3946d2790b0dc754bf485cca2fba78d22be68a9add55d`）在C clean46bf/AFFB上实际exit0。直接输出原生 `.artifacts/p18-native-wire/result.json` SHA `e5c910d002f5355f5f87e502dc70d63ae459b7153d471b997da6ceed2c5ab294`；69个相关production/script/helpers/Awrapper前后相同。Bearer无DPoP广告、create/sign/header各0，AS2post/RS2get；DPoP ASnonce challenge2、RSnonce1、code2post/refresh2post/RS3get，独立Nodecrypto核7proof/4assertion/3Session及jti/htm/htu/iat/ath/同origin nonce隔离。pass-through只计数不改真实C/A结果。回调明确published loopback，AS/RS为scripted HTTPS fixture，非独立第三方AS/GUI/System。B只读核源码/结果/69files无阻塞，全部listener/state/SQL/SS/container清理。
+
+NoAS handler机械提取后继3961059只移到 `scripts/helpers/no-as-product-verifier.ts`（a74586…23817e），原product-native仅改调用（91f5aaa…a0048）。D只读确认默认company.test语义和原Nodecrypto验证未削弱；不重跑旧NoAS脚本，也不重标旧5113来源。新current P01/P28复用了此单一helper：C46bf/AFFB/D a8/F43同Host/provider/ref/mixedCIMD，真实FNoAS1/Token0→Context仍installed时F.stop且实际rawCtargets已dispose/assertActive拒→卸F三rows/关闭NoAS与SS→同一Host再MCP首次CC双工具→真8500ms SQL到期后CC2双工具，无authorize/callback/refresh。G实际1case pass，原生C `.local/verification/shared-product-current-host-20261106.json` SHA `00cc6b086d50ec09d9cccaac36d566ffaed86814befa60b2f982db368b1d7a66`，MySQL/Redis/Croot/TLS/PG/SS全清；D只读复审无阻塞，F不在此重复执行或提交C spec。首轮新case缺actualAgent被合法门禁拒，修test actor后成功，不算prodBug。
+
+以上新增仅test/script/docs，runtime仍43、安装文档制品仍e65；source/test后继与二者分开。没有改变存储、production、依赖或现有tar，未跑fullsuite/System/GUI/共享部署。
