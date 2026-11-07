@@ -53,7 +53,29 @@ C 服务需实现 `bindProtocolConsumer(actualInstalledContext)` 与 `bindPapHos
 
 模型只有 `pap_status`、`pap_operations`、`pap_request` 三个工具。`pap_request` 输入只含本地 `operationRef`、已声明 path/query 参数及可选 JSON body，不接受 URL、method、Header、resource、scopes、account slot 或认证 metadata。method/destination/resource/session 来自本地已发现描述与用户授权。每次启用产生新的持久授权 generation，撤销后重新启用也不能让旧的在途调用越过发送前 fence。操作输出只给有界业务 JSON／状态，不透传响应 Header。除凭据字段和 JWT 模式外，实际发送前只在 Host 内存捕获本次 Session/DPoP/access/refresh 等值，任意 JSON key/value 或嵌入消息中的同值也遮盖；自动 refresh 后即使 sign-out 清空 Store，迟到 response 也不能回显新凭据。当前工具是 HTTP operation adapter；MCP 描述不会被当成已经实现的 PAP MCP transport，机器 MCP 不作 PAP 回退。
 
-状态 key 的 namespace 包含 PAP purpose、规范化 profile stateRoot 摘要以及 identity/owner/client binding 摘要；不同 profile 不复用同一 item。移动 profile 目录需要受控迁移其 protected item，不能只拷密文后创建新 key。状态根密钥默认使用真实 Linux Secret Service 的 `KeyringSecretStore`，不写明文或 env/RootKey fallback。缺少 `secret-tool`、后端锁定或既有 item 丢失时返回 `credential_unavailable`。可由受信同进程 `papHost.secrets` 注入其他 OS 的合规 `HostSecretStore`；该接口必须支持原子的 32-byte key 创建，不能把普通 credentials YAML 当成等价保护。可选 `./host-secrets` provider 仅供应 secrets；callback driver 一律从 C 目标绑定 factory 获取。既有密文对应 item 丢失时不会生成替代 key。
+状态 key 的 namespace 包含 PAP purpose、规范化 profile stateRoot 摘要以及 identity/owner/client binding 摘要；不同 profile 不复用同一 item。移动 profile 目录需要受控迁移其 protected item，不能只拷密文后创建新 key。状态根密钥默认使用 Linux Secret Service，也可显式选择下面的跨平台文件存储。受信 Host 仍可通过同进程 `papHost.secrets` 提供 `HostSecretStore`；显式指定 `secretStore` 时，以插件配置为准。密钥后端之间不会自动回退或迁移。
+
+### 跨平台文件密钥存储
+
+```yaml
+- id: pap
+  name: '@agentconnect/dsh-pap/plugin'
+  config:
+    enabled: true
+    stateRoot: /Users/your-name/.dsh/profiles/pap-test/pap
+    policyRef: approved-c-policy-id
+    secretStore: local-file
+    secretsRoot: /Users/your-name/.dsh/secrets/pap
+```
+
+两个路径都使用本机绝对路径；Windows 可用 `C:/Users/your-name/...`。`secretsRoot` 与 `stateRoot` 必须是彼此独立、互不包含的目录。不同 profile 和身份通过 namespace 派生各自的密钥文件名。
+
+文件后端保存随机 32 字节的 PAP 状态加密密钥：macOS/Linux 设置目录 `0700`、文件 `0600` 并检查当前用户所有权；Windows 使用系统 PowerShell 设置当前用户 SID 的 DACL、移除继承权限，不依赖 chmod。临时文件写入并刷盘后，通过不覆盖已有目标的原子 hard link 发布；并发创建复用胜出的文件。需要支持这些文件权限和 hard link 的本地文件系统（例如 APFS、NTFS）。Windows 刷新文件，不尝试打开目录执行 fsync。
+
+PAP 状态继续加密保存，Agent/Delegation/DPoP 私钥仍由 ANP Identity 托管。文件权限保护边界是当前 OS 用户账户；同用户进程和管理员仍可能访问。已有密文找不到对应密钥或密钥文件损坏时返回 `credential_unavailable`，不会为已有密文生成替代密钥。备份及迁移需同时保留匹配的状态与密钥，并在目标系统重设权限。
+
+独立 Host 集成也可从根包或 `./file-secrets` 导入 `FileSecretStore`；`./host-secrets` provider 同样接受 `secretStore: local-file` 和 `secretsRoot`。保留 keyring 时，Linux 仍需要可用的 `secret-tool`。本次未改变默认后端。
+
 
 生产网络默认 `SafeHttpsTransport`。受信 Host 的 `papHost.transport` 仅用于显式部署连接策略和组件验证，Remote/Tools 不能覆盖。`privateOrigins`、`portOverrides` 和自定义 DNS 仅适用于明确配置的隔离部署/组件；TLS 始终验证，连接映射只改变 TCP 端口，Host 与 Session htu 保持逻辑 URL。
 

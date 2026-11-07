@@ -198,3 +198,9 @@ P18后继script `p18-native-wire-component.ts`（SHA `4d636239a1549cf108a3946d27
 NoAS handler机械提取后继3961059只移到 `scripts/helpers/no-as-product-verifier.ts`（a74586…23817e），原product-native仅改调用（91f5aaa…a0048）。D只读确认默认company.test语义和原Nodecrypto验证未削弱；不重跑旧NoAS脚本，也不重标旧5113来源。新current P01/P28复用了此单一helper：C46bf/AFFB/D a8/F43同Host/provider/ref/mixedCIMD，真实FNoAS1/Token0→Context仍installed时F.stop且实际rawCtargets已dispose/assertActive拒→卸F三rows/关闭NoAS与SS→同一Host再MCP首次CC双工具→真8500ms SQL到期后CC2双工具，无authorize/callback/refresh。G实际1case pass，原生C `.local/verification/shared-product-current-host-20261106.json` SHA `00cc6b086d50ec09d9cccaac36d566ffaed86814befa60b2f982db368b1d7a66`，MySQL/Redis/Croot/TLS/PG/SS全清；D只读复审无阻塞，F不在此重复执行或提交C spec。首轮新case缺actualAgent被合法门禁拒，修test actor后成功，不算prodBug。
 
 以上新增仅test/script/docs，runtime仍43、安装文档制品仍e65；source/test后继与二者分开。没有改变存储、production、依赖或现有tar，未跑fullsuite/System/GUI/共享部署。
+
+## 2026-11-07 跨平台文件密钥后端
+
+按用户要求新增显式 `secretStore: local-file` / `secretsRoot` 配置及 `FileSecretStore`。状态仍加密；原生签名私钥不经过本文件后端。macOS/Linux 使用当前用户所有权与 0700/0600，Windows 使用当前 SID 的 DACL。跨进程首次创建通过已刷盘临时文件的原子 hard link 完成，不覆盖已有密钥；既有密文丢失密钥时沿用拒绝读取语义。插件及独立 Host provider 均可选择后端，默认配置和原 keyring 行为保留；后端切换不自动迁移已有数据。另调整 Windows 的目录 fsync 路径。
+
+实际执行 `npm run build`（TypeScript 编译及 browser client 构建）成功，`git diff --check` 通过。用户明确要求本轮不执行测试，由用户在平台验证；未运行单元、组件、系统或平台测试，因此不宣称 macOS/Windows 运行验收通过。未安装、打包、更新 Desktop 内置候选或部署服务；本记录不改变前面历史测试所对应的源码版本。

@@ -12,6 +12,7 @@
     "./host": "./lib/host.js",
     "./plugin": "./lib/plugin.js",
     "./host-secrets": "./lib/host-secrets.js",
+    "./file-secrets": "./lib/file-secrets.js",
     "./management-remote": "./lib/management-remote.js",
     "./remote": "./lib/remote.js",
     "./tools": "./lib/tools.js",

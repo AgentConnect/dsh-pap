@@ -8,6 +8,7 @@ import { ProtocolIdentityHost, type ProtocolIdentityClient } from './protocol-ad
 import { SafeHttpsTransport } from './network.js';
 import { PapError, requirePap, type PapAuthHint } from './errors.js';
 import { KeyringSecretStore } from './keyring.js';
+import { FileSecretStore, syncDirectory } from './file-secrets.js';
 import { DeviceCallbackHandoff } from './callback-handoff.js';
 import { PAP_CONSUMER, PAP_MANAGER, PAP_TOOLS, identityReferenceSchema, managementRequestSchema, operationRequestSchema, type PapHostConsumer, type PapManagementRequest, type ProductResult } from './product-api.js';
 import { assertApproval, findOperation, prepareOperation, privateValues, publicOperations, publicResponse, sanitizePublicValue } from './product-operations.js';
@@ -20,6 +21,10 @@ export interface PapPluginConfig {
   enabled?: boolean;
   stateRoot?: string;
   keyringService?: string;
+  /** Explicit local storage selection; no automatic fallback between backends. */
+  secretStore?: 'keyring' | 'local-file';
+  /** Absolute key directory, separate from stateRoot. Required for local-file. */
+  secretsRoot?: string;
   /** Approved C policy chosen by Host configuration, never by a Remote or model. */
   policyRef?: string;
   identityRef?: IdentityRef;
@@ -97,7 +102,7 @@ export class PapService extends Service {
       const file = await open(temporary, 'wx', 0o600);
       try { await file.writeFile(JSON.stringify(reference)); await file.sync(); } finally { await file.close(); }
       await rename(temporary, join(root, 'selected-identity.json'));
-      const directory = await open(root, 'r'); try { await directory.sync(); } finally { await directory.close(); }
+      await syncDirectory(root);
     } finally { await rm(temporary, { force: true }); }
   }
   private async select(reference: IdentityRef, persist: boolean): Promise<void> {
@@ -117,7 +122,17 @@ export class PapService extends Service {
       requirePap(typeof identity.bindProtocolConsumer === 'function', 'permission_denied');
       const protocolHost = new ProtocolIdentityHost(identity.bindProtocolConsumer(this.installedContext), this.config.policyRef!);
       const host = this.installedContext.get('papHost') as PapHostServices | undefined;
-      const protectedSecrets = host?.secrets ?? new KeyringSecretStore(this.config.keyringService ?? 'org.agentconnect.dsh-pap', join(this.config.stateRoot!, 'keyring-locks'));
+      requirePap(this.config.secretStore === undefined || ['keyring', 'local-file'].includes(this.config.secretStore), 'not_configured');
+      let protectedSecrets: HostSecretStore;
+      if (this.config.secretStore === 'local-file') {
+        requirePap(typeof this.config.secretsRoot === 'string' && isAbsolute(this.config.secretsRoot), 'not_configured');
+        protectedSecrets = new FileSecretStore(this.config.secretsRoot);
+      } else if (this.config.secretStore === 'keyring') {
+        protectedSecrets = new KeyringSecretStore(this.config.keyringService ?? 'org.agentconnect.dsh-pap', join(this.config.stateRoot!, 'keyring-locks'));
+      } else {
+        protectedSecrets = host?.secrets ?? new KeyringSecretStore(this.config.keyringService ?? 'org.agentconnect.dsh-pap', join(this.config.stateRoot!, 'keyring-locks'));
+      }
+      if (protectedSecrets instanceof FileSecretStore) protectedSecrets.assertSeparateFrom(this.config.stateRoot!);
       const profileNamespace = `dsh-pap/profile/${sha256(resolve(this.config.stateRoot!))}/`;
       const secrets: HostSecretStore = {
         getEncryptionKey: namespace => protectedSecrets.getEncryptionKey(profileNamespace + namespace),

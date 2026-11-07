@@ -6,6 +6,9 @@
       name: '@agentconnect/dsh-pap/plugin'
       config:
         enabled: false
+        # To select file storage explicitly, also set stateRoot and policyRef.
+        # secretStore: local-file
+        # secretsRoot: /absolute/private/dsh/secrets/pap
     - id: pap-manager
       name: '@agentconnect/dsh-pap/management-remote'
     - id: pap-tools

@@ -5,6 +5,7 @@ import lockfile from 'proper-lockfile';
 import type { HostSecretStore } from './host.js';
 import type { PapState } from './types.js';
 import { PapError, requirePap } from './errors.js';
+import { syncDirectory } from './file-secrets.js';
 import { ensureCredentialVault } from './credential-history.js';
 const empty = (): PapState => ({ schemaVersion: 1, generation: 0, companies: {}, subjects: {}, sessions: {}, delegations: {}, grants: {}, transactions: {}, nonces: {}, cooldowns: {}, retirements: {}, accountSlots: {}, delegationAttempts: {},credentialVault:{version:1,completeness:'complete',entries:{},blocked:false} });
 
@@ -66,7 +67,7 @@ export class PapStore {
         const file = await open(temp, 'wx', 0o600);
         try { await file.writeFile(Buffer.concat([Buffer.from('PAP01'), iv, cipher.getAuthTag(), encrypted])); await file.sync(); } finally { await file.close(); }
         await rename(temp, this.path);
-        const directory = await open(this.root, 'r'); try { await directory.sync(); } finally { await directory.close(); }
+        await syncDirectory(this.root);
       } finally { await rm(temp, { force: true }); }
       return structuredClone(result);
     } finally { key?.fill(0); await release(); }
