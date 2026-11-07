@@ -12,8 +12,8 @@ const contribution: TypertRemoteContribution = {
   package: '@agentconnect/dsh-pap',
   descriptors: methods.map(method => ({
     id: `@agentconnect/dsh-pap#papManager/${method}`, service: 'papManager', namespace: 'papManager', method, invocation: { kind: 'direct' },
-    parameters: method === 'manage' ? [{ name: 'input', wire: 'input', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-pap/manager#Request', schema: managementRequestSchema } }] : [],
-    result: { mode: 'strict', typeSymbol: 'dsh-pap/manager#Result', schema: result },
+    parameters: method === 'manage' ? [{ name: 'input', wire: 'input', source: 'json', codec: { mode: 'strict', typeSymbol: 'dsh-pap/manager#Request', create: () => managementRequestSchema } }] : [],
+    result: { mode: 'strict', typeSymbol: 'dsh-pap/manager#Result', create: () => result },
   })),
 };
 export default contribution;

@@ -93,6 +93,8 @@ PAP 状态继续加密保存，Agent/Delegation/DPoP 私钥仍由 ANP Identity �
 
 ## 构建、测试和依赖来源
 
+当前插件面向 Harness `0.2.2-rc.1`，使用 Cordis `4.1.0` 与 Loader `1.1.0`。Remote 描述符使用该版本的延迟 `create()` codec 接口；不再声明兼容 Harness `0.1.5`。
+
 ```bash
 npm ci --ignore-scripts
 npm run typecheck
@@ -101,7 +103,7 @@ npm run build
 npm pack --ignore-scripts --pack-destination .artifacts
 ```
 
-生产依赖固定 `proper-lockfile@4.1.2` 和 `zod@4.6.2`（严格管理 DTO）；JOSE 验证使用 Node crypto。Cordis 固定 `4.0.2`，可选 Host peer 为 typert/tools `0.1.5-rc.2`；依赖 integrity 在 package-lock.json 固定。C/A 的新 PAP API 尚未发布到 registry，因此本阶段依赖实际 Host capability 结构绑定，不能宣称已通过新 API 的 registry 安装验证或正式发行门槛。此阶段不将未发布本地源码写作正式 SDK lock 来源。
+生产依赖固定 `proper-lockfile@4.1.2` 和 `zod@4.6.2`（严格管理 DTO）；JOSE 验证使用 Node crypto。Cordis 固定 `4.1.0`，可选 Host peer 为 typert/tools `0.2.2-rc.1`；依赖 integrity 在 package-lock.json 固定。C/A 的新 PAP API 尚未发布到 registry，因此本阶段依赖实际 Host capability 结构绑定，不能宣称已通过新 API 的 registry 安装验证或正式发行门槛。此阶段不将未发布本地源码写作正式 SDK lock 来源。
 
 `npm test` 是本仓库单位/隔离组件检查，不启动产品 E2E、System Test 或远程部署。`tests/fixture.ts` 的 in-memory ECDSA custody 仅供测试，和生产 C/A 路径分开。`tests/vectors/local-signer-v2.json` 来自 A 的真实本地 native 公有测试向量，独立 Node 验签；没有私钥。它证明 wire 兼容，不替代实际 C/A Host 接入。
 
