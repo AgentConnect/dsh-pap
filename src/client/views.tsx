@@ -43,6 +43,13 @@ export function PapSettings({controller}:{controller:PapSettingsController}):Rea
       <label>Company 域名 <input aria-label="Company 域名" value={domain} placeholder="company.example" onChange={event=>setDomain(event.target.value)} disabled={busy||view.status.state!=='ready'}/></label>
       <button disabled={busy||!domain.trim()||view.status.state!=='ready'}>发现 Company</button>
     </form>
+    <aside aria-label="已支持的服务示例" className="pap-supported">
+      <strong>已支持的服务示例</strong>
+      <div className="pap-actions"><a href="https://agent-network-protocol.com" target="_blank" rel="noopener noreferrer">agent-network-protocol.com</a>
+        <span>用途：访问 ANP 社区官网（MCP / ANP / PAP 示例 Service Agent）</span>
+        <button type="button" disabled={busy} onClick={()=>setDomain('agent-network-protocol.com')}>填入示例域名</button></div>
+      <p className="pap-muted">仅填入 Company 域名，不会自动发现、连接或授权。连接后仍需明确允许操作。</p>
+    </aside>
     {view.status.companies.map(company=><Company key={company.companyRef} company={company} view={view} controller={controller}/>)}
     {view.status.pendingSignIns.map(pending=><div key={pending.transactionRef}>
       <p>账户登录等待完成。</p>
