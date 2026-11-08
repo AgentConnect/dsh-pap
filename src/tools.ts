@@ -26,11 +26,11 @@ export function apply(ctx: Context): void {
     execute: async (_args, execution) => { agent(execution); return facade.status(); } });
   register({ name: 'pap_operations', description: 'List Company operations explicitly enabled by the user. Use their opaque operationRef with pap_request.', parameters: empty, output,
     execute: async (_args, execution) => { agent(execution); return facade.operations(); } });
-  register({ name: 'pap_request', description: 'Invoke one user-enabled Company operation. Supply its operationRef and only declared path/query parameters and optional JSON body. Account sign-in is a separate user action.',
+  register({ name: 'pap_request', description: 'Invoke one user-enabled Company operation. Supply its operationRef and only declared path/query parameters and optional JSON body. Path and query values must be strings, including numeric parameters (for example query: {page: "1"}). Account sign-in is a separate user action.',
     parameters: { type: 'object', additionalProperties: false, required: ['operationRef'], properties: {
       operationRef: { type: 'string' },
-      path: { type: 'object', additionalProperties: true },
-      query: { type: 'object', additionalProperties: true },
+      path: { type: 'object', description: 'Declared path parameter values encoded as strings.', additionalProperties: { type: 'string', maxLength: 1024 } },
+      query: { type: 'object', description: 'Declared query parameter values encoded as strings; use page: "1", not page: 1.', additionalProperties: { type: 'string', maxLength: 4096 } },
       body: {},
     } }, output,
     execute: async (args, execution) => { agent(execution); return facade.request(args, execution.signal); } });
