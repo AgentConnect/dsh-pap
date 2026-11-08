@@ -90,7 +90,7 @@ test('PAP client entry registers actual settings.section with only the user mana
 test('PAP browser artifact is a distinct module-loader client and contains no Host dependency graph',async()=>{
   const bytes=await readFile(new URL('../lib/browser-client.js',import.meta.url),'utf8');let loaded:any;
   runInNewContext(bytes,{window:{__ModuleLoader__:{load(value:unknown){loaded=value;}}}},{timeout:1000});
-  assert.equal(loaded.id,'@agentconnect/dsh-pap');const module=loaded.factory((name:string)=>{if(name==='react')return ReactModule;if(name==='react/jsx-runtime')return JsxRuntime;throw new Error('Unexpected browser external');});
+  assert.equal(loaded.id,'@awiki/dsh-pap');const module=loaded.factory((name:string)=>{if(name==='react')return ReactModule;if(name==='react/jsx-runtime')return JsxRuntime;throw new Error('Unexpected browser external');});
   assert.equal(typeof module.apply,'function');assert.equal(module.PapClient,undefined);
   const inputs=JSON.parse(await readFile(new URL('../.artifacts/browser-inputs.json',import.meta.url),'utf8'));
   assert.equal(inputs.hostModulesIncluded,false);assert(!inputs.inputs.some((path:string)=>/src\/(plugin|store|keyring|credential-history|protocol-adapter|client)\.ts$/.test(path)));

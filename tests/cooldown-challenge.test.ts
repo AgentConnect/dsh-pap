@@ -14,9 +14,9 @@ import { SafeHttpsTransport } from '../src/network.js';
 import { binding, FixtureHost, FixtureTransport, jsonResponse, secretKey, secrets } from './fixture.js';
 const fails=(code:string)=>(error:unknown)=>error instanceof PapError&&error.code===code;
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
-async function setup(t:test.TestContext, account=false, sameOrigin=false){
+async function setup(t:test.TestContext, account=false, sameOrigin=false, clock?:()=>number){
   const root=await mkdtemp(join(tmpdir(),'pap-cooldown-'));t.after(()=>rm(root,{recursive:true,force:true}));const host=new FixtureHost();const transport=new FixtureTransport();transport.mode=account?'account':'none';if(sameOrigin)transport.issuer='https://shop.example';
-  const options={binding,stateRoot:root,identityHost:host,secretStore:secrets,callbackHandoff:{register:async()=>({callbackRef:'fixture-claim'}),collect:async()=>({})}};
+  const options={binding,stateRoot:root,identityHost:host,secretStore:secrets,...(clock?{clock}:{}),callbackHandoff:{register:async()=>({callbackRef:'fixture-claim'}),collect:async()=>({})}};
   const client=new PapClient(options,transport);const company=await client.resolvePapCompany('shop.example');const subject=await client.getOrCreatePapUser(company.companyRef);const session=await client.openPapSession(subject.subjectRef);return {root,host,transport,options,client,...company,...subject,...session};
 }
 async function account(f:Awaited<ReturnType<typeof setup>>, bearer=false){
@@ -51,9 +51,19 @@ test('P22 long cooldown is not capped to 300 and is shared by sessions/instances
   const f=await setup(t);f.transport.override=url=>url.includes('/api/cart')?jsonResponse(url,{},429,{'retry-after':'3601'}):undefined;const started=Date.now();await assert.rejects(f.client.dispatchPap(f.sessionRef,{url:'https://shop.example/api/cart'}),error=>error instanceof PapError&&Number(error.retryAfterSeconds)>3600);const state=await f.client.store.read();assert(BigInt(state.cooldowns[resourceCooldownKey(f.companyId,'https://shop.example')]!.notBeforeMs)>=BigInt(started)+3601000n);const count=f.host.sessionCount;const other=new PapClient(f.options,f.transport);const session=await other.openPapSession(f.subjectRef);await assert.rejects(other.dispatchPap(session.sessionRef,{url:'https://shop.example/api/cart'}),fails('rate_limited'));assert.equal(f.host.sessionCount,count);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);
 });
 
-for(const action of ['disconnect','close','signout']as const)test(`P22 ${action} cancels an inline wait while the persisted fence remains`,async t=>{
-  const f=await setup(t,action==='signout');const current=action==='signout'?await account(f):{sessionRef:f.sessionRef,accountSlot:undefined};f.transport.override=url=>url.includes('/api/cart')?jsonResponse(url,{},429,{'retry-after':'1'}):undefined;await assert.rejects(f.client.dispatchPap(current.sessionRef,{url:'https://shop.example/api/cart'}),fails('rate_limited'));const count=f.host.sessionCount;
-  const pending=f.client.dispatchPap(current.sessionRef,{url:'https://shop.example/api/cart'}).then(()=>'',error=>(error as PapError).code);await sleep(80);const at=Date.now();if(action==='disconnect')await new PapClient(f.options,f.transport).disconnectPap(current.sessionRef);else if(action==='close')f.client.close();else await f.client.signOutAccount(f.subjectRef,current.accountSlot!);const code=await pending;assert.equal(code,action==='signout'?'reauthorization_required':'disconnected');assert(Date.now()-at<400);assert.equal(f.host.sessionCount,count);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);assert(Object.keys((await f.client.store.read()).cooldowns).length>0);
+for(const action of ['disconnect','close','signout']as const)test(`P22 ${action} cancels an inline wait while the persisted fence remains`,{timeout:15000},async t=>{
+  const now=Date.now();const f=await setup(t,action==='signout',false,()=>now);
+  const current=action==='signout'?await account(f):{sessionRef:f.sessionRef,accountSlot:undefined};
+  f.transport.override=url=>url.includes('/api/cart')?jsonResponse(url,{},429,{'retry-after':'1'}):undefined;
+  await assert.rejects(f.client.dispatchPap(current.sessionRef,{url:'https://shop.example/api/cart'}),fails('rate_limited'));const count=f.host.sessionCount;
+  let observed:()=>void=()=>{};const waiting=new Promise<void>(resolve=>observed=resolve);const read=f.client.store.read.bind(f.client.store);let reads=0;
+  f.client.store.read=async()=>{const state=await read();if(++reads>=2)observed();return state;};
+  const pending=f.client.dispatchPap(current.sessionRef,{url:'https://shop.example/api/cart'}).then(()=>'',error=>(error as PapError).code);
+  await waiting;
+  const stopped=action==='disconnect'?new PapClient(f.options,f.transport).disconnectPap(current.sessionRef):action==='close'?Promise.resolve(f.client.close()):f.client.signOutAccount(f.subjectRef,current.accountSlot!);
+  const code=await pending;assert.equal(code,action==='signout'?'reauthorization_required':'disconnected');await stopped;
+  assert.equal(f.host.sessionCount,count);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);
+  assert(Object.keys((await f.client.store.read()).cooldowns).length>0);
 });
 
 test('P22 scope and lease are rechecked after cooldown without signing or sending',async t=>{
@@ -67,8 +77,16 @@ test('P22 AS cooldown blocks assertions across clients but not a valid resource 
   f.transport.override=url=>url.includes('/api/cart')?jsonResponse(url,{},429,{'retry-after':'3601'}):undefined;await assert.rejects(f.client.dispatchPap(current.sessionRef,{url:'https://shop.example/api/cart'}),fails('rate_limited'));const prior=f.host.assertionCount;await f.client.refreshAccountGrant(current.grantRef);assert.equal(f.host.assertionCount,prior+1);const state=await f.client.store.read();assert(state.cooldowns[asCooldownKey(f.companyId,f.transport.issuer)]);assert(state.cooldowns[resourceCooldownKey(f.companyId,'https://shop.example')]);
 });
 
-test('P22 disconnect cancels a dispatch waiting for AS refresh before a client assertion',async t=>{
-  const f=await setup(t,true);const current=await account(f);f.transport.override=(url,options)=>url.endsWith('/token')&&new URLSearchParams(options!.body).get('grant_type')==='refresh_token'?jsonResponse(url,{},429,{'retry-after':'1'}):undefined;await assert.rejects(f.client.refreshAccountGrant(current.grantRef),fails('rate_limited'));await f.client.store.transaction(state=>{state.grants[current.grantRef]!.expiresAt=Date.now()-1;});const before=f.host.assertionCount;const pending=f.client.dispatchPap(current.sessionRef,{url:'https://shop.example/api/cart'}).then(()=>'',error=>(error as PapError).code);await sleep(80);await f.client.disconnectPap(current.sessionRef);assert.equal(await pending,'disconnected');assert.equal(f.host.assertionCount,before);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,0);
+test('P22 disconnect cancels a dispatch waiting for AS refresh before a client assertion',{timeout:15000},async t=>{
+  const now=Date.now();const f=await setup(t,true,false,()=>now);const current=await account(f);
+  f.transport.override=(url,options)=>url.endsWith('/token')&&new URLSearchParams(options!.body).get('grant_type')==='refresh_token'?jsonResponse(url,{},429,{'retry-after':'1'}):undefined;
+  await assert.rejects(f.client.refreshAccountGrant(current.grantRef),fails('rate_limited'));
+  await f.client.store.transaction(state=>{state.grants[current.grantRef]!.expiresAt=now-1;});const before=f.host.assertionCount;
+  let observed:()=>void=()=>{};const refreshing=new Promise<void>(resolve=>observed=resolve);const read=f.client.store.read.bind(f.client.store);
+  f.client.store.read=async()=>{const state=await read();if(state.grants[current.grantRef]?.status==='refreshing')observed();return state;};
+  const pending=f.client.dispatchPap(current.sessionRef,{url:'https://shop.example/api/cart'}).then(()=>'',error=>(error as PapError).code);
+  await refreshing;await f.client.disconnectPap(current.sessionRef);assert.equal(await pending,'disconnected');
+  assert.equal(f.host.assertionCount,before);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,0);
 });
 
 test('P22 challenge-only Bearer takes precedence and exposes only safe management hints',async t=>{

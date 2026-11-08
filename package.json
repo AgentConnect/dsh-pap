@@ -1,7 +1,6 @@
 {
-  "name": "@agentconnect/dsh-pap",
+  "name": "@awiki/dsh-pap",
   "version": "0.1.0",
-  "private": true,
   "description": "Local-custody PAP 0.3 client for DeepSeek Harness",
   "type": "module",
   "license": "Apache-2.0",
@@ -12,6 +11,7 @@
     "./host": "./lib/host.js",
     "./plugin": "./lib/plugin.js",
     "./host-secrets": "./lib/host-secrets.js",
+    "./file-secrets": "./lib/file-secrets.js",
     "./management-remote": "./lib/management-remote.js",
     "./remote": "./lib/remote.js",
     "./tools": "./lib/tools.js",
@@ -20,7 +20,8 @@
       "types": "./lib/client/index.d.ts",
       "default": "./lib/browser-client.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
   },
   "files": [
     "lib",
@@ -43,37 +44,38 @@
     "test:client": "npm run build && tsx --test tests/client-ui.test.ts",
     "test:product-native-component": "tsx scripts/product-native-component.ts",
     "test:sidecar": "npm run build && tsx scripts/secret-service-sidecar-component.ts",
-    "test:product-account-component": "tsx scripts/product-account-component.ts"
+    "test:product-account-component": "tsx scripts/product-account-component.ts",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "proper-lockfile": "4.1.2",
     "zod": "4.6.2"
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "4.0.2",
-    "@deepseek-ai/dsh-tools": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-typert-protocol": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-typert-registry": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-api-remotes": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-connection": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-renderer": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-layout": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "0.1.5-rc.2",
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-typert-registry": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-api-remotes": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-connection": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.2-rc.1",
     "react": "18.3.1"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "4.0.2",
-    "@deepseek-ai/cordis-plugin-loader": "1.0.3",
-    "@deepseek-ai/dsh-api-remotes": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-connection": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-store": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-layout": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-renderer": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-typert-protocol": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-typert-registry": "0.1.5-rc.2",
+    "@deepseek-ai/cordis": "4.1.0",
+    "@deepseek-ai/cordis-plugin-loader": "1.1.0",
+    "@deepseek-ai/dsh-api-remotes": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-connection": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-store": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-typert-registry": "0.2.2-rc.1",
     "@testing-library/dom": "10.4.1",
     "@testing-library/react": "16.3.1",
     "@types/jsdom": "21.1.7",
@@ -138,5 +140,18 @@
     "react": {
       "optional": true
     }
-  }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AgentConnect/dsh-pap.git"
+  },
+  "keywords": [
+    "pap",
+    "deepseek-harness",
+    "dsh-plugin"
+  ]
 }

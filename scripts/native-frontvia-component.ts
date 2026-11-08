@@ -45,7 +45,7 @@ try {
   const nativeSha256 = createHash('sha256').update(await readFile(resolve(dirname(fixturePath), '../../../../bindings/node/anp-identity.linux-x64-gnu.node'))).digest('hex');
   assert.equal(nativeSha256, expectedNative);
   const { createNativeProtocolFixture } = await import(pathToFileURL(fixturePath).href);
-  fixture = await createNativeProtocolFixture({ publicationOrigin, redirectUris: [redirectUri], publicationCapabilities: { mcpMachine: false, papSession: true, papAccount: true }, consumer: '@agentconnect/dsh-pap', profiles: ['pap_session','pap_account'], issuers: [companyOrigin], resources: [companyOrigin, companyOrigin + '/api/pap03'], scopes: ['profile:read'] }) as NativeFixture;
+  fixture = await createNativeProtocolFixture({ publicationOrigin, redirectUris: [redirectUri], publicationCapabilities: { mcpMachine: false, papSession: true, papAccount: true }, consumer: '@awiki/dsh-pap', profiles: ['pap_session','pap_account'], issuers: [companyOrigin], resources: [companyOrigin, companyOrigin + '/api/pap03'], scopes: ['profile:read'] }) as NativeFixture;
   const metadata = strictJson(Buffer.from(fixture.publicMaterials.metadata)) as Record<string, unknown>;
   const jwks = strictJson(Buffer.from(fixture.publicMaterials.jwks)) as { keys: Record<string, unknown>[] };
   assert.equal(new URL(String(metadata.client_id)).origin, publicationOrigin);

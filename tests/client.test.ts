@@ -114,15 +114,24 @@ test('F-T08 redirect, 429, revoked permission and disconnect do not change proto
   await f.client.disconnectPap(f.sessionRef); await assert.rejects(f.client.dispatchPap(f.sessionRef,{url:'https://shop.example/api/cart'}),fails('disconnected'));
 });
 test('F-T10 Device remains a separately unimplemented lane and is never advertised',async t=>{const f=await setup(t,'account'); assert.deepEqual((await f.client.getPapStatus()).supportedSignIn,['direct']);await assert.rejects(f.client.startSignIn(f.subjectRef,{method:'device',resource:'https://shop.example',scopes:['orders:read'],redirectUri:'https://agent.example/pap-callback',callbackMode:'handoff'}),fails('unsupported_sign_in'));});
-test('F-T07 independent clients merge a concurrent refresh and resource/AS nonce stay separate',async t=>{
+test('F-T07 independent clients merge a concurrent refresh and resource/AS nonce stay separate',{timeout:30000},async t=>{
   const f=await setup(t,'account');const grant=await signedIn(f);const restarted=new PapClient(f.options,f.transport);let refreshes=0;
+  let release:()=>void=()=>{};let entered:()=>void=()=>{};let observed:()=>void=()=>{};
+  const started=new Promise<void>(resolve=>entered=resolve);const waiting=new Promise<void>(resolve=>observed=resolve);
+  const transaction=restarted.store.transaction.bind(restarted.store);
+  restarted.store.transaction=async fn=>transaction(state=>{
+    const result=fn(state);if(state.grants[grant.grantRef]?.status==='refreshing')observed();return result;
+  });
   f.transport.override=(url,options)=>{
     if(url.endsWith('/token')&&new URLSearchParams(options!.body).get('grant_type')==='refresh_token'){
-      refreshes++;return new Promise(resolve=>setTimeout(()=>resolve(jsonResponse(url,{access_token:'updated',refresh_token:'rotated',token_type:'DPoP'})),40));
+      refreshes++;return new Promise(resolve=>{release=()=>resolve(jsonResponse(url,{access_token:'updated',refresh_token:'rotated',token_type:'DPoP'}));entered();});
     }
   };
-  await Promise.all([f.client.refreshAccountGrant(grant.grantRef),restarted.refreshAccountGrant(grant.grantRef)]);assert.equal(refreshes,1);assert.equal((await f.client.store.read()).grants[grant.grantRef]!.refreshToken,'rotated');
+  const first=f.client.refreshAccountGrant(grant.grantRef);await started;
+  const second=restarted.refreshAccountGrant(grant.grantRef);await waiting;release();
+  await Promise.all([first,second]);assert.equal(refreshes,1);assert.equal((await f.client.store.read()).grants[grant.grantRef]!.refreshToken,'rotated');
 });
+
 test('F-T07 refresh/signout race retains new refresh for revocation without resurrecting account',async t=>{
   const f=await setup(t,'account');const grant=await signedIn(f);let release:()=>void=()=>{};let entered:()=>void=()=>{};const start=new Promise<void>(resolve=>entered=resolve);
   f.transport.override=(url,options)=>{
@@ -172,12 +181,15 @@ test('F-T07 concurrent expired dispatch joins a refresh across clients and uses 
   const other=new PapClient(f.options,f.transport);const second=other.dispatchPap(session.sessionRef,{url:'https://shop.example/api/cart'}).finally(()=>{secondSettled=true;});await new Promise(resolve=>setTimeout(resolve,40));assert.equal(secondSettled,false);release();const responses=await Promise.all([first,second]);assert(responses.every(x=>x.status===200));assert.equal(refreshes,1);
   const calls=f.transport.calls.filter(x=>x.url.includes('/api/cart'));assert.equal(calls.length,2);assert(calls.every(x=>x.options!.headers!.authorization==='DPoP joined-access'));assert.notEqual(jwtParts(calls[0]!.options!.headers!['poppy-session']!).payload.jti,jwtParts(calls[1]!.options!.headers!['poppy-session']!).payload.jti);
 });
-test('F-T07 dispatch waiting for refresh cannot cross a signout epoch or send signed out',async t=>{
+test('F-T07 dispatch waiting for refresh cannot cross a signout epoch or send signed out',{timeout:30000},async t=>{
   const f=await setup(t,'account');const result=await signedIn(f);const session=await f.client.openPapSession(f.subjectRef,result.accountSlot);await f.client.store.transaction(state=>{state.grants[result.grantRef]!.expiresAt=Date.now()-1;});
   let release:()=>void=()=>{};let entered:()=>void=()=>{};const started=new Promise<void>(resolve=>entered=resolve);
   f.transport.override=(url,options)=>url.endsWith('/token')&&new URLSearchParams(options!.body).get('grant_type')==='refresh_token'?new Promise(resolve=>{release=()=>resolve(jsonResponse(url,{access_token:'cancelled-refresh-access',refresh_token:'cancelled-refresh-secret',token_type:'DPoP',expires_in:3600}));entered();}):undefined;
   const capture=(promise:Promise<unknown>)=>promise.then(()=>({error:''}),error=>({error:(error as PapError).code}));
-  const first=capture(f.client.dispatchPap(session.sessionRef,{url:'https://shop.example/api/cart'}));await started;const other=new PapClient(f.options,f.transport);const second=capture(other.dispatchPap(session.sessionRef,{url:'https://shop.example/api/cart'}));await new Promise(resolve=>setTimeout(resolve,40));assert.equal((await other.signOutAccount(f.subjectRef,result.accountSlot)).status,'revocation_pending');release();
+  const first=capture(f.client.dispatchPap(session.sessionRef,{url:'https://shop.example/api/cart'}));await started;const other=new PapClient(f.options,f.transport);
+  let observed:()=>void=()=>{};const captured=new Promise<void>(resolve=>observed=resolve);const read=other.store.read.bind(other.store);
+  other.store.read=async()=>{const state=await read();if(state.sessions[session.sessionRef]?.accountSlot===result.accountSlot)observed();return state;};
+  const second=capture(other.dispatchPap(session.sessionRef,{url:'https://shop.example/api/cart'}));await captured;assert.equal((await other.signOutAccount(f.subjectRef,result.accountSlot)).status,'revocation_pending');release();
   assert.equal((await first).error,'revocation_pending');assert.equal((await second).error,'reauthorization_required');assert(!f.transport.calls.some(x=>x.url.includes('/api/cart')));assert(!Object.values((await f.client.store.read()).grants).some(x=>x.status==='active'));
 });
 test('F-T05 retired failed delegation attempt is not reused after restart; sid and subject stay fixed',async t=>{

@@ -4,7 +4,7 @@ Apache-2.0-licensed DSH Host plugin and PAP client. The protocol baseline is
 [the fixed 0.3 spec](https://github.com/personal-agent-protocol/personal-agent-protocol/blob/6fb46d381ac1b94265795132af13848ec442b6f6/content/versions/0.3/spec.mdx),
 Git blob `01e9dc34bacb73ef0a740cc3bae77d82f0be0d37`.
 
-源码以 [Apache-2.0](LICENSE) 公开。`private: true` 保留用于防止误发布 npm；本次不发布包或镜像。
+源码以 [Apache-2.0](LICENSE) 公开。包名为 `@awiki/dsh-pap`，声明 DSH bundle；发布必须经过显式授权和发布前验证。安装 bundle 默认不启用签名或网络请求，仍需配置身份、用途策略和秘密后端。
 
 ## 已实现路径
 
@@ -20,11 +20,11 @@ Device 为后续独立阶段，当前返回 `unsupported_sign_in` 并且不广�
 
 ## Host 接入
 
-`@agentconnect/dsh-pap/plugin` 提供实际 Cordis `pap` 服务；bundle 同时挂载用户管理 `./management-remote`、模型工具 `./tools` 和根 package 的 client declaration marker。根 `@agentconnect/dsh-pap` 保留 Host 库 exports，作为 Cordis row 时仅是无能力 marker；不提供第二个 pap 服务、不注入 C 或 credentials。真实 consumer 始终是唯一的 `@agentconnect/dsh-pap/plugin`。默认 `enabled: false`，没有 Company、identity 或 policy 时不执行网络发现、创建凭据或签名。用户仍可读取 disabled/unconfigured 状态。启用需要 Host 的明确 profile 配置，不再读取 `DSH_PAP_*` 环境变量或接受自报 binding：
+`@awiki/dsh-pap/plugin` 提供实际 Cordis `pap` 服务；bundle 同时挂载用户管理 `./management-remote`、模型工具 `./tools` 和根 package 的 client declaration marker。根 `@awiki/dsh-pap` 保留 Host 库 exports，作为 Cordis row 时仅是无能力 marker；不提供第二个 pap 服务、不注入 C 或 credentials。真实 consumer 始终是唯一的 `@awiki/dsh-pap/plugin`。默认 `enabled: false`，没有 Company、identity 或 policy 时不执行网络发现、创建凭据或签名。用户仍可读取 disabled/unconfigured 状态。启用需要 Host 的明确 profile 配置，不再读取 `DSH_PAP_*` 环境变量或接受自报 binding：
 
 ```yaml
 - id: pap
-  name: '@agentconnect/dsh-pap/plugin'
+  name: '@awiki/dsh-pap/plugin'
   config:
     enabled: true
     stateRoot: /absolute/profile/pap
@@ -32,11 +32,11 @@ Device 为后续独立阶段，当前返回 `unsupported_sign_in` 并且不广�
     keyringService: org.agentconnect.dsh-pap
 ```
 
-C 的真实 Loader consumer 必须是精确 `@agentconnect/dsh-pap/plugin`。Host 在 C 管理面预批准相应身份、profile、target 和 scopes；Remote 只选择 `{storeId, identityId, did}`，不能提交 owner、client_id、policy、verified metadata 或 targetRef。F 捕获插件构造时的真实 Context；不会将随 Cordis Service 调用关联变化的 `this.ctx` 当作签名调用者。
+C 的真实 Loader consumer 必须是精确 `@awiki/dsh-pap/plugin`。Host 在 C 管理面预批准相应身份、profile、target 和 scopes；Remote 只选择 `{storeId, identityId, did}`，不能提交 owner、client_id、policy、verified metadata 或 targetRef。F 捕获插件构造时的真实 Context；不会将随 Cordis Service 调用关联变化的 `this.ctx` 当作签名调用者。
 
 C 服务需实现 `bindProtocolConsumer(actualInstalledContext)` 与 `bindPapHostConsumer(actualInstalledContext)`。后者返回同进程 capability，`resolveBinding(identityRef, policyRef, profile)` 从当前已发布身份与政策得出 binding，`callbackManagementFor({identityRef,policyRef,targetRef})` 只返回 register/claim 两个受限操作。F 的 `ProtocolIdentityHost` 通过 C 真实 `registerValidatedTarget` 得到 opaque target，callback adapter 从加密事务重建相同 issuer/resource/scope 后取得该目标；不接受用户或模型提交的 opaque 引用。C factory 不可用时拒绝操作，不以组件 fixture 补位。失效 capability 永不复活；status/工具不会自动重绑，仅用户显式 identity/select 或插件重载从实际 Context 重新取得当前许可。
 
-用户管理 namespace 为 `papManager`：`status()`、`operations()`、`manage(request)`。仅安装的 `@agentconnect/dsh-pap/management-remote` Context 可以取得管理 facade，部署必须把该 namespace 留在已认证的用户管理 Gateway，不接入 Agent 的 Remote/MCP 通用工具。闭合管理动作如下：
+用户管理 namespace 为 `papManager`：`status()`、`operations()`、`manage(request)`。仅安装的 `@awiki/dsh-pap/management-remote` Context 可以取得管理 facade，部署必须把该 namespace 留在已认证的用户管理 Gateway，不接入 Agent 的 Remote/MCP 通用工具。闭合管理动作如下：
 
 | action | 作用 |
 |---|---|
@@ -53,7 +53,29 @@ C 服务需实现 `bindProtocolConsumer(actualInstalledContext)` 与 `bindPapHos
 
 模型只有 `pap_status`、`pap_operations`、`pap_request` 三个工具。`pap_request` 输入只含本地 `operationRef`、已声明 path/query 参数及可选 JSON body，不接受 URL、method、Header、resource、scopes、account slot 或认证 metadata。method/destination/resource/session 来自本地已发现描述与用户授权。每次启用产生新的持久授权 generation，撤销后重新启用也不能让旧的在途调用越过发送前 fence。操作输出只给有界业务 JSON／状态，不透传响应 Header。除凭据字段和 JWT 模式外，实际发送前只在 Host 内存捕获本次 Session/DPoP/access/refresh 等值，任意 JSON key/value 或嵌入消息中的同值也遮盖；自动 refresh 后即使 sign-out 清空 Store，迟到 response 也不能回显新凭据。当前工具是 HTTP operation adapter；MCP 描述不会被当成已经实现的 PAP MCP transport，机器 MCP 不作 PAP 回退。
 
-状态 key 的 namespace 包含 PAP purpose、规范化 profile stateRoot 摘要以及 identity/owner/client binding 摘要；不同 profile 不复用同一 item。移动 profile 目录需要受控迁移其 protected item，不能只拷密文后创建新 key。状态根密钥默认使用真实 Linux Secret Service 的 `KeyringSecretStore`，不写明文或 env/RootKey fallback。缺少 `secret-tool`、后端锁定或既有 item 丢失时返回 `credential_unavailable`。可由受信同进程 `papHost.secrets` 注入其他 OS 的合规 `HostSecretStore`；该接口必须支持原子的 32-byte key 创建，不能把普通 credentials YAML 当成等价保护。可选 `./host-secrets` provider 仅供应 secrets；callback driver 一律从 C 目标绑定 factory 获取。既有密文对应 item 丢失时不会生成替代 key。
+状态 key 的 namespace 包含 PAP purpose、规范化 profile stateRoot 摘要以及 identity/owner/client binding 摘要；不同 profile 不复用同一 item。移动 profile 目录需要受控迁移其 protected item，不能只拷密文后创建新 key。状态根密钥默认使用 Linux Secret Service，也可显式选择下面的跨平台文件存储。受信 Host 仍可通过同进程 `papHost.secrets` 提供 `HostSecretStore`；显式指定 `secretStore` 时，以插件配置为准。密钥后端之间不会自动回退或迁移。
+
+### 跨平台文件密钥存储
+
+```yaml
+- id: pap
+  name: '@awiki/dsh-pap/plugin'
+  config:
+    enabled: true
+    stateRoot: /Users/your-name/.dsh/profiles/pap-test/pap
+    policyRef: approved-c-policy-id
+    secretStore: local-file
+    secretsRoot: /Users/your-name/.dsh/secrets/pap
+```
+
+两个路径都使用本机绝对路径；Windows 可用 `C:/Users/your-name/...`。`secretsRoot` 与 `stateRoot` 必须是彼此独立、互不包含的目录。不同 profile 和身份通过 namespace 派生各自的密钥文件名。
+
+文件后端保存随机 32 字节的 PAP 状态加密密钥：macOS/Linux 设置目录 `0700`、文件 `0600` 并检查当前用户所有权；Windows 使用系统 PowerShell 设置当前用户 SID 的 DACL、移除继承权限，不依赖 chmod。临时文件写入并刷盘后，通过不覆盖已有目标的原子 hard link 发布；并发创建复用胜出的文件。需要支持这些文件权限和 hard link 的本地文件系统（例如 APFS、NTFS）。Windows 刷新文件，不尝试打开目录执行 fsync。
+
+PAP 状态继续加密保存，Agent/Delegation/DPoP 私钥仍由 ANP Identity 托管。文件权限保护边界是当前 OS 用户账户；同用户进程和管理员仍可能访问。已有密文找不到对应密钥或密钥文件损坏时返回 `credential_unavailable`，不会为已有密文生成替代密钥。备份及迁移需同时保留匹配的状态与密钥，并在目标系统重设权限。
+
+独立 Host 集成也可从根包或 `./file-secrets` 导入 `FileSecretStore`；`./host-secrets` provider 同样接受 `secretStore: local-file` 和 `secretsRoot`。保留 keyring 时，Linux 仍需要可用的 `secret-tool`。本次未改变默认后端。
+
 
 生产网络默认 `SafeHttpsTransport`。受信 Host 的 `papHost.transport` 仅用于显式部署连接策略和组件验证，Remote/Tools 不能覆盖。`privateOrigins`、`portOverrides` 和自定义 DNS 仅适用于明确配置的隔离部署/组件；TLS 始终验证，连接映射只改变 TCP 端口，Host 与 Session htu 保持逻辑 URL。
 
@@ -71,6 +93,8 @@ C 服务需实现 `bindProtocolConsumer(actualInstalledContext)` 与 `bindPapHos
 
 ## 构建、测试和依赖来源
 
+当前插件面向 Harness `0.2.2-rc.1`，使用 Cordis `4.1.0` 与 Loader `1.1.0`。Remote 描述符使用该版本的延迟 `create()` codec 接口；不再声明兼容 Harness `0.1.5`。
+
 ```bash
 npm ci --ignore-scripts
 npm run typecheck
@@ -79,7 +103,7 @@ npm run build
 npm pack --ignore-scripts --pack-destination .artifacts
 ```
 
-生产依赖固定 `proper-lockfile@4.1.2` 和 `zod@4.6.2`（严格管理 DTO）；JOSE 验证使用 Node crypto。Cordis 固定 `4.0.2`，可选 Host peer 为 typert/tools `0.1.5-rc.2`；依赖 integrity 在 package-lock.json 固定。C/A 的新 PAP API 尚未发布到 registry，因此本阶段依赖实际 Host capability 结构绑定，不能宣称已通过新 API 的 registry 安装验证或正式发行门槛。此阶段不将未发布本地源码写作正式 SDK lock 来源。
+生产依赖固定 `proper-lockfile@4.1.2` 和 `zod@4.6.2`（严格管理 DTO）；JOSE 验证使用 Node crypto。Cordis 固定 `4.1.0`，可选 Host peer 为 typert/tools `0.2.2-rc.1`；依赖 integrity 在 package-lock.json 固定。C/A 的新 PAP API 尚未发布到 registry，因此本阶段依赖实际 Host capability 结构绑定，不能宣称已通过新 API 的 registry 安装验证或正式发行门槛。此阶段不将未发布本地源码写作正式 SDK lock 来源。
 
 `npm test` 是本仓库单位/隔离组件检查，不启动产品 E2E、System Test 或远程部署。`tests/fixture.ts` 的 in-memory ECDSA custody 仅供测试，和生产 C/A 路径分开。`tests/vectors/local-signer-v2.json` 来自 A 的真实本地 native 公有测试向量，独立 Node 验签；没有私钥。它证明 wire 兼容，不替代实际 C/A Host 接入。
 
@@ -158,3 +182,17 @@ AT/RT 的脱敏不限于一次请求或当前 grant：有效 AS response 在返�
 侧车入口 `scripts/secret-service-sidecar-component.ts` 单独验证当前加密 vault 的真实 backend create/get、daemon 重启、新 Host Node 进程恢复和无明文；镜像复用已核验 fea7c2…，不是把整个 C/Python 仓库搬入容器。原始宿主缺后端记录仍成立，容器后端不代表宿主已配置。
 
 新实际账户入口 `scripts/product-account-component.ts` 已实际通过：使用新 C factory 与 user Remote、固定 B HTTPS relay、G 实际 OAuth/DPoP 及默认 backend；显式当前 A runtime aliases，并核实际加载冻结 native FFB。它不是旧直接 PapClient/managed-callback helper 的替代计数，完整来源见验证记录。
+
+## npm scope and existing source profiles
+
+The published package is `@awiki/dsh-pap`. Its identity consumer is
+`@awiki/dsh-pap/plugin`; manager and tool entries use the same package scope.
+Install with `pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.0`.
+
+Earlier unpublished source profiles used `@agentconnect/dsh-pap`. They are not
+silently aliased or granted access under the new consumer. Configure the new
+installed consumer explicitly in ANP Identity's allow list and protocol policy,
+then approve it. Keep the existing identity Store and keys unchanged. Start the
+new PAP consumer with its own empty state root and matching secret namespace;
+retain old encrypted PAP state and its keys separately rather than editing its
+binding, overwriting keys, or attempting an unauthenticated in-place migration.

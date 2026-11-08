@@ -16,7 +16,7 @@ import type { PublicJwk } from '../src/types.js';
 import { secrets } from '../tests/fixture.js';
 const fixturePath=resolve(process.argv[2]!);
 const {createNativeProtocolFixture}=await import(pathToFileURL(fixturePath).href);
-const fixture=await createNativeProtocolFixture({consumer:'@agentconnect/dsh-pap',profiles:['pap_session','pap_account'],issuers:['https://company.test'],resources:['https://company.test','https://company.test/api'],scopes:['orders:read']});
+const fixture=await createNativeProtocolFixture({consumer:'@awiki/dsh-pap',profiles:['pap_session','pap_account'],issuers:['https://company.test'],resources:['https://company.test','https://company.test/api'],scopes:['orders:read']});
 const root=await mkdtemp(join(tmpdir(),'pap-native-component-'));
 let server:https.Server|undefined;
 try {

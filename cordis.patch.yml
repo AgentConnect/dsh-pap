@@ -1,12 +1,15 @@
 # Explicit opt-in configuration is owned by the profile Host. No implicit environment binding.
 - insert:
     - id: pap-client-declaration
-      name: '@agentconnect/dsh-pap'
+      name: '@awiki/dsh-pap'
     - id: pap
-      name: '@agentconnect/dsh-pap/plugin'
+      name: '@awiki/dsh-pap/plugin'
       config:
         enabled: false
+        # To select file storage explicitly, also set stateRoot and policyRef.
+        # secretStore: local-file
+        # secretsRoot: /absolute/private/dsh/secrets/pap
     - id: pap-manager
-      name: '@agentconnect/dsh-pap/management-remote'
+      name: '@awiki/dsh-pap/management-remote'
     - id: pap-tools
-      name: '@agentconnect/dsh-pap/tools'
+      name: '@awiki/dsh-pap/tools'
