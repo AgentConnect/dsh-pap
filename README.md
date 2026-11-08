@@ -63,7 +63,7 @@ The shared identity can publish DID, CIMD and JWKS material through an identity 
 Install the bundle when its package is available in your registry:
 
 ```sh
-pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.0
+pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.1
 ```
 
 Build and run unit/component checks from source:
