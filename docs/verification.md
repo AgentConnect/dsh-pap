@@ -124,7 +124,7 @@ H/G/E 的 P01/P28 联合已完成并释放 F HEAD guard：原生工具结果结�
 
 ## PAP installed Host 管理与受限工具（新增候选）
 
-本轮针对只读产品接入审计发现的缺口，仅修改 F 仓库。bundle 默认 disabled，不再隐式从 DSH_PAP_* 环境变量取得 binding；enabled 但配置不全时返回 unconfigured，正常装载且没有网络或 key 创建。实际插件 Context 固定为 `@agentconnect/dsh-pap/plugin`；独立用户 Remote 与工具 row 分别为 `@agentconnect/dsh-pap/management-remote`、`@agentconnect/dsh-pap/tools`，通过真实 Loader entry/fiber 校验。用户管理不再依赖调用者提供的 `assertAuthorizedUserAction` 空泛回调。产品 Host 必须将 Typert 管理 namespace 限定在真实已认证用户 Gateway；本模块没有新建公开 HTTP listener 或把管理能力注册成模型工具。
+本轮针对只读产品接入审计发现的缺口，仅修改 F 仓库。bundle 默认 disabled，不再隐式从 DSH_PAP_* 环境变量取得 binding；enabled 但配置不全时返回 unconfigured，正常装载且没有网络或 key 创建。实际插件 Context 固定为 `@awiki/dsh-pap/plugin`；独立用户 Remote 与工具 row 分别为 `@awiki/dsh-pap/management-remote`、`@awiki/dsh-pap/tools`，通过真实 Loader entry/fiber 校验。用户管理不再依赖调用者提供的 `assertAuthorizedUserAction` 空泛回调。产品 Host 必须将 Typert 管理 namespace 限定在真实已认证用户 Gateway；本模块没有新建公开 HTTP listener 或把管理能力注册成模型工具。
 
 新增 `PapHostConsumer` 是 C 真实安全 factory 的结构合同，不是 F 自实现授权：F 仅给出实际 installed Context、三字段身份 reference 和 Host 固定 policyRef；binding/HTTPS redirect 从当前 C publication/policy 得出。callback 逐次从加密事务还原 Company/resource/scope，先走真实 ProtocolIdentityHost 获取 C opaque target，再索取 register/claim 闭合 capability 并在 finally dispose。F 没有 DeviceAccess、NativeStore 或 generic HTTP/signer 入口。C factory 在本轮 F 单位测试中是明确替身；未把此前直接 new PapClient 的真实 native 结果当成此新入口的 C/A 集成通过。真实 C factory owner 通知 ready 后才补必要模块验证。
 
@@ -204,3 +204,14 @@ NoAS handler机械提取后继3961059只移到 `scripts/helpers/no-as-product-ve
 按用户要求新增显式 `secretStore: local-file` / `secretsRoot` 配置及 `FileSecretStore`。状态仍加密；原生签名私钥不经过本文件后端。macOS/Linux 使用当前用户所有权与 0700/0600，Windows 使用当前 SID 的 DACL。跨进程首次创建通过已刷盘临时文件的原子 hard link 完成，不覆盖已有密钥；既有密文丢失密钥时沿用拒绝读取语义。插件及独立 Host provider 均可选择后端，默认配置和原 keyring 行为保留；后端切换不自动迁移已有数据。另调整 Windows 的目录 fsync 路径。
 
 实际执行 `npm run build`（TypeScript 编译及 browser client 构建）成功，`git diff --check` 通过。用户明确要求本轮不执行测试，由用户在平台验证；未运行单元、组件、系统或平台测试，因此不宣称 macOS/Windows 运行验收通过。未安装、打包、更新 Desktop 内置候选或部署服务；本记录不改变前面历史测试所对应的源码版本。
+
+## Release timing verification
+
+The cross-client refresh and signout cases use explicit transaction/read barriers
+to ensure the tested requests overlap; fixed 40 ms sleeps do not establish that
+ordering on a durable filesystem. Cooldown cancellation cases freeze the injected
+protocol clock and wait for an observed state, so cancellation must settle
+without advancing the cooldown. The error-code, single-refresh, persisted-fence,
+and no-extra-signature/network assertions remain in place. Whole signout duration
+is not treated as cancellation latency because it also includes remote revocation.
+These are test synchronization changes, not weakened production checks.

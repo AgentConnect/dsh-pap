@@ -5,7 +5,7 @@ import { requirePap } from './errors.js';
 import type { HostSecretStore } from './host.js';
 import type { PapHostServices } from './plugin.js';
 export interface Config { secretStore?: 'keyring' | 'local-file'; secretsRoot?: string; keyringService?: string; locksRoot?: string }
-export const name='@agentconnect/dsh-pap/host-secrets';
+export const name='@awiki/dsh-pap/host-secrets';
 /** Optional Host secrets provider with an explicitly selected storage backend. */
 export class PapHostService extends Service implements PapHostServices {
   readonly secrets: HostSecretStore;

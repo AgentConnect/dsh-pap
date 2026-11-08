@@ -17,6 +17,6 @@ export type { PapHostConsumer, PapManagementRequest, PapOperationRequest, Produc
 export { FileSecretStore } from './file-secrets.js';
 export { KeyringSecretStore } from './keyring.js';
 /** Root Loader row declares the browser client; the capability-owning service is ./plugin. */
-export const name = '@agentconnect/dsh-pap';
+export const name = '@awiki/dsh-pap';
 export const inject: string[] = [];
 export function apply(_context: import('@deepseek-ai/cordis').Context): void {}

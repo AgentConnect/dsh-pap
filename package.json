@@ -1,5 +1,5 @@
 {
-  "name": "@agentconnect/dsh-pap",
+  "name": "@awiki/dsh-pap",
   "version": "0.1.0",
   "description": "Local-custody PAP 0.3 client for DeepSeek Harness",
   "type": "module",

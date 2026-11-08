@@ -2,9 +2,9 @@ import { z } from 'zod';
 import type { Binding, IdentityRef } from './types.js';
 import type { DeviceManagementOperations } from './callback-handoff.js';
 
-export const PAP_CONSUMER = '@agentconnect/dsh-pap/plugin';
-export const PAP_MANAGER = '@agentconnect/dsh-pap/management-remote';
-export const PAP_TOOLS = '@agentconnect/dsh-pap/tools';
+export const PAP_CONSUMER = '@awiki/dsh-pap/plugin';
+export const PAP_MANAGER = '@awiki/dsh-pap/management-remote';
+export const PAP_TOOLS = '@awiki/dsh-pap/tools';
 
 /** C-owned capability. The caller is the actual installed F Context, never a wire name. */
 export interface PapHostConsumer {

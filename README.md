@@ -4,7 +4,7 @@ Apache-2.0-licensed DSH Host plugin and PAP client. The protocol baseline is
 [the fixed 0.3 spec](https://github.com/personal-agent-protocol/personal-agent-protocol/blob/6fb46d381ac1b94265795132af13848ec442b6f6/content/versions/0.3/spec.mdx),
 Git blob `01e9dc34bacb73ef0a740cc3bae77d82f0be0d37`.
 
-源码以 [Apache-2.0](LICENSE) 公开。包名为 `@agentconnect/dsh-pap`，声明 DSH bundle；发布必须经过显式授权和发布前验证。安装 bundle 默认不启用签名或网络请求，仍需配置身份、用途策略和秘密后端。
+源码以 [Apache-2.0](LICENSE) 公开。包名为 `@awiki/dsh-pap`，声明 DSH bundle；发布必须经过显式授权和发布前验证。安装 bundle 默认不启用签名或网络请求，仍需配置身份、用途策略和秘密后端。
 
 ## 已实现路径
 
@@ -20,11 +20,11 @@ Device 为后续独立阶段，当前返回 `unsupported_sign_in` 并且不广�
 
 ## Host 接入
 
-`@agentconnect/dsh-pap/plugin` 提供实际 Cordis `pap` 服务；bundle 同时挂载用户管理 `./management-remote`、模型工具 `./tools` 和根 package 的 client declaration marker。根 `@agentconnect/dsh-pap` 保留 Host 库 exports，作为 Cordis row 时仅是无能力 marker；不提供第二个 pap 服务、不注入 C 或 credentials。真实 consumer 始终是唯一的 `@agentconnect/dsh-pap/plugin`。默认 `enabled: false`，没有 Company、identity 或 policy 时不执行网络发现、创建凭据或签名。用户仍可读取 disabled/unconfigured 状态。启用需要 Host 的明确 profile 配置，不再读取 `DSH_PAP_*` 环境变量或接受自报 binding：
+`@awiki/dsh-pap/plugin` 提供实际 Cordis `pap` 服务；bundle 同时挂载用户管理 `./management-remote`、模型工具 `./tools` 和根 package 的 client declaration marker。根 `@awiki/dsh-pap` 保留 Host 库 exports，作为 Cordis row 时仅是无能力 marker；不提供第二个 pap 服务、不注入 C 或 credentials。真实 consumer 始终是唯一的 `@awiki/dsh-pap/plugin`。默认 `enabled: false`，没有 Company、identity 或 policy 时不执行网络发现、创建凭据或签名。用户仍可读取 disabled/unconfigured 状态。启用需要 Host 的明确 profile 配置，不再读取 `DSH_PAP_*` 环境变量或接受自报 binding：
 
 ```yaml
 - id: pap
-  name: '@agentconnect/dsh-pap/plugin'
+  name: '@awiki/dsh-pap/plugin'
   config:
     enabled: true
     stateRoot: /absolute/profile/pap
@@ -32,11 +32,11 @@ Device 为后续独立阶段，当前返回 `unsupported_sign_in` 并且不广�
     keyringService: org.agentconnect.dsh-pap
 ```
 
-C 的真实 Loader consumer 必须是精确 `@agentconnect/dsh-pap/plugin`。Host 在 C 管理面预批准相应身份、profile、target 和 scopes；Remote 只选择 `{storeId, identityId, did}`，不能提交 owner、client_id、policy、verified metadata 或 targetRef。F 捕获插件构造时的真实 Context；不会将随 Cordis Service 调用关联变化的 `this.ctx` 当作签名调用者。
+C 的真实 Loader consumer 必须是精确 `@awiki/dsh-pap/plugin`。Host 在 C 管理面预批准相应身份、profile、target 和 scopes；Remote 只选择 `{storeId, identityId, did}`，不能提交 owner、client_id、policy、verified metadata 或 targetRef。F 捕获插件构造时的真实 Context；不会将随 Cordis Service 调用关联变化的 `this.ctx` 当作签名调用者。
 
 C 服务需实现 `bindProtocolConsumer(actualInstalledContext)` 与 `bindPapHostConsumer(actualInstalledContext)`。后者返回同进程 capability，`resolveBinding(identityRef, policyRef, profile)` 从当前已发布身份与政策得出 binding，`callbackManagementFor({identityRef,policyRef,targetRef})` 只返回 register/claim 两个受限操作。F 的 `ProtocolIdentityHost` 通过 C 真实 `registerValidatedTarget` 得到 opaque target，callback adapter 从加密事务重建相同 issuer/resource/scope 后取得该目标；不接受用户或模型提交的 opaque 引用。C factory 不可用时拒绝操作，不以组件 fixture 补位。失效 capability 永不复活；status/工具不会自动重绑，仅用户显式 identity/select 或插件重载从实际 Context 重新取得当前许可。
 
-用户管理 namespace 为 `papManager`：`status()`、`operations()`、`manage(request)`。仅安装的 `@agentconnect/dsh-pap/management-remote` Context 可以取得管理 facade，部署必须把该 namespace 留在已认证的用户管理 Gateway，不接入 Agent 的 Remote/MCP 通用工具。闭合管理动作如下：
+用户管理 namespace 为 `papManager`：`status()`、`operations()`、`manage(request)`。仅安装的 `@awiki/dsh-pap/management-remote` Context 可以取得管理 facade，部署必须把该 namespace 留在已认证的用户管理 Gateway，不接入 Agent 的 Remote/MCP 通用工具。闭合管理动作如下：
 
 | action | 作用 |
 |---|---|
@@ -59,7 +59,7 @@ C 服务需实现 `bindProtocolConsumer(actualInstalledContext)` 与 `bindPapHos
 
 ```yaml
 - id: pap
-  name: '@agentconnect/dsh-pap/plugin'
+  name: '@awiki/dsh-pap/plugin'
   config:
     enabled: true
     stateRoot: /Users/your-name/.dsh/profiles/pap-test/pap
@@ -182,3 +182,17 @@ AT/RT 的脱敏不限于一次请求或当前 grant：有效 AS response 在返�
 侧车入口 `scripts/secret-service-sidecar-component.ts` 单独验证当前加密 vault 的真实 backend create/get、daemon 重启、新 Host Node 进程恢复和无明文；镜像复用已核验 fea7c2…，不是把整个 C/Python 仓库搬入容器。原始宿主缺后端记录仍成立，容器后端不代表宿主已配置。
 
 新实际账户入口 `scripts/product-account-component.ts` 已实际通过：使用新 C factory 与 user Remote、固定 B HTTPS relay、G 实际 OAuth/DPoP 及默认 backend；显式当前 A runtime aliases，并核实际加载冻结 native FFB。它不是旧直接 PapClient/managed-callback helper 的替代计数，完整来源见验证记录。
+
+## npm scope and existing source profiles
+
+The published package is `@awiki/dsh-pap`. Its identity consumer is
+`@awiki/dsh-pap/plugin`; manager and tool entries use the same package scope.
+Install with `pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.0`.
+
+Earlier unpublished source profiles used `@agentconnect/dsh-pap`. They are not
+silently aliased or granted access under the new consumer. Configure the new
+installed consumer explicitly in ANP Identity's allow list and protocol policy,
+then approve it. Keep the existing identity Store and keys unchanged. Start the
+new PAP consumer with its own empty state root and matching secret namespace;
+retain old encrypted PAP state and its keys separately rather than editing its
+binding, overwriting keys, or attempting an unauthenticated in-place migration.

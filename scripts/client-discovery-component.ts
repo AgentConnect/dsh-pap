@@ -14,12 +14,12 @@ try{
   await ctx.plugin(Loader,{baseUrl:pathToFileURL(resolve('package.json')).href});
   // Actual root package exports; no engine or C capability is mounted by this row.
   const module=await import(pathToFileURL(resolve('lib/index.js')).href);
-  ctx.loader.import=async name=>{assert.equal(name,'@agentconnect/dsh-pap');return module;};
-  await ctx.loader.create({name:'@agentconnect/dsh-pap'});await ctx.loader.await();
+  ctx.loader.import=async name=>{assert.equal(name,'@awiki/dsh-pap');return module;};
+  await ctx.loader.create({name:'@awiki/dsh-pap'});await ctx.loader.await();
   assert.equal(ctx.get('pap'),undefined);await ctx.plugin(Registry);
-  const registry=ctx.get('clientModules') as any;const graph=registry.graph();const row=graph.entries.find((value:any)=>value.id==='@agentconnect/dsh-pap');assert(row);
+  const registry=ctx.get('clientModules') as any;const graph=registry.graph();const row=graph.entries.find((value:any)=>value.id==='@awiki/dsh-pap');assert(row);
   assert.equal(registry.clientPath(row.id),resolve('lib/browser-client.js'));
-  const response=registry.fetchBundle(new Request('http://component.test'+row.url));assert.equal(response.status,200);const body=await response.text();assert(body.includes('@agentconnect/dsh-pap'));assert(!body.includes('NativeStore'));assert(!body.includes('credentialVault'));
+  const response=registry.fetchBundle(new Request('http://component.test'+row.url));assert.equal(response.status,200);const body=await response.text();assert(body.includes('@awiki/dsh-pap'));assert(!body.includes('NativeStore'));assert(!body.includes('credentialVault'));
   assert.equal(createHash('sha256').update(await readFile(entry)).digest('hex'),sha256);
   console.log(JSON.stringify({status:'passed',lane:'actual_renderer_ClientModuleRegistry_root_marker_browser_export',registryEntrySha256:sha256,
     markerHasPapService:false,discoveredPackage:row.id,selectedArtifact:registry.clientPath(row.id),servedBundle:true,browserDependencyPurity:true,productRendererBoot:false}));
