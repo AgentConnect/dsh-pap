@@ -1,7 +1,6 @@
 {
   "name": "@agentconnect/dsh-pap",
   "version": "0.1.0",
-  "private": true,
   "description": "Local-custody PAP 0.3 client for DeepSeek Harness",
   "type": "module",
   "license": "Apache-2.0",
@@ -21,7 +20,8 @@
       "types": "./lib/client/index.d.ts",
       "default": "./lib/browser-client.js"
     },
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./cordis.patch.yml": "./cordis.patch.yml"
   },
   "files": [
     "lib",
@@ -44,7 +44,8 @@
     "test:client": "npm run build && tsx --test tests/client-ui.test.ts",
     "test:product-native-component": "tsx scripts/product-native-component.ts",
     "test:sidecar": "npm run build && tsx scripts/secret-service-sidecar-component.ts",
-    "test:product-account-component": "tsx scripts/product-account-component.ts"
+    "test:product-account-component": "tsx scripts/product-account-component.ts",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "proper-lockfile": "4.1.2",
@@ -139,5 +140,18 @@
     "react": {
       "optional": true
     }
-  }
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AgentConnect/dsh-pap.git"
+  },
+  "keywords": [
+    "pap",
+    "deepseek-harness",
+    "dsh-plugin"
+  ]
 }

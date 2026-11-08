@@ -4,7 +4,7 @@ Apache-2.0-licensed DSH Host plugin and PAP client. The protocol baseline is
 [the fixed 0.3 spec](https://github.com/personal-agent-protocol/personal-agent-protocol/blob/6fb46d381ac1b94265795132af13848ec442b6f6/content/versions/0.3/spec.mdx),
 Git blob `01e9dc34bacb73ef0a740cc3bae77d82f0be0d37`.
 
-源码以 [Apache-2.0](LICENSE) 公开。`private: true` 保留用于防止误发布 npm；本次不发布包或镜像。
+源码以 [Apache-2.0](LICENSE) 公开。包名为 `@agentconnect/dsh-pap`，声明 DSH bundle；发布必须经过显式授权和发布前验证。安装 bundle 默认不启用签名或网络请求，仍需配置身份、用途策略和秘密后端。
 
 ## 已实现路径
 
