@@ -122,6 +122,8 @@ test('PAP product: installed manager and tools are distinct, raw contexts and wi
   assert(f.contexts.every(context => context.fiber === (entry.fiber as any).ctx.fiber));
   error(await f.execute('pap_request', { operationRef: 'made-up', url: 'https://evil.example', scopes: [] }), 'permission_denied');
   assert.deepEqual([...f.tools.keys()], ['pap_status','pap_operations','pap_request']);
+  assert(f.tools.get('pap_status').description.includes('https://agent-network-protocol.com'));
+  assert(f.tools.get('pap_status').description.includes('supports MCP, ANP and PAP'));
 });
 test('PAP product: explicit Company + Session + operation permission enables signed-out requests without Token', async t => {
   const f = await fixture(t); const { operation, session } = await connected(f);

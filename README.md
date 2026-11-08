@@ -142,6 +142,29 @@ The placeholder must be replaced by the **actual enabled operationRef**; the mod
 
 The management Remote must be exposed only through an authenticated **user** gateway, never as a general model tool. Agent calls accept a previously authorized `operationRef` plus declared path/query fields and an optional JSON body; they do not accept arbitrary URL/method/headers, raw authorization tokens or resource changes.
 
+## Service Agent example
+
+https://agent-network-protocol.com is the project's example Service Agent for
+MCP, ANP and PAP. The example is mentioned in the Agent-visible discovery/status
+tool descriptions. To see ANP in action, discover `agent-network-protocol.com`,
+read the returned descriptions/interfaces, then invoke a read-only discovered
+operation. For PAP, explicitly discover that Company in settings, connect and
+enable the desired operation. MCP uses a separately configured server connection.
+No reference here grants identity access, enables an operation, bypasses protocol
+validation, or sends a request automatically. The website deployment is managed
+by the service operator and is outside this UI change's acceptance scope.
+
+## Basic and advanced settings
+
+The normal PAP page shows the active published identity, Company discovery,
+one regular connection and explicit operation permission. Existing regular
+connections are reused by the UI rather than creating duplicates. Connection
+IDs/cleanup, per-operation connection changes, scopes and optional account
+management are collapsed by default. NoAS companies do not show account-login
+controls. Existing sessions are never deleted automatically, accounts/scopes are
+never selected implicitly, and saving a different operation connection remains
+an explicit user action.
+
 ## Security and current limits
 
 - PAP state is AES-256-GCM encrypted and partitioned by identity/profile. Missing or mismatched secret keys fail closed.
