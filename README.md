@@ -183,3 +183,13 @@ For detailed API, storage, verification and recovery notes see the [Chinese tech
 ## License
 
 [Apache-2.0](LICENSE).
+
+## Service examples and Agent guide
+
+Below the Company field, `agent-network-protocol.com` is listed for visiting the
+ANP community website and its multi-protocol example. Filling the example does
+not discover, connect or grant anything automatically. Use `pap_status` first,
+configure and approve operations in the owner UI, then `pap_operations` and
+`pap_request`. URL path/query values are strings (e.g. `page: "1"`); JSON body
+values retain their types. NoAS is not an account-login flow. The identity plugin's
+`identity_connection_guide` remains available before PAP is configured.

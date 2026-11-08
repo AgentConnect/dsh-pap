@@ -55,7 +55,7 @@ test('PAP settings: browser login link is user-only, explicit and isolated from 
   fireEvent.change(screen.getByLabelText('连接 GET /orders'),{target:{value:'session-one'}});fireEvent.click(screen.getByLabelText('orders:read'));await click('发起账户登录');
   const link=screen.getByRole('link',{name:'在浏览器中完成账户登录'});assert.equal(link.getAttribute('target'),'_blank');assert.equal(link.getAttribute('rel'),'noopener noreferrer');assert(link.getAttribute('href')!.includes('state=user-state'));assert.equal(opened,0);
   assert.deepEqual(f.calls[0],{action:'account/sign-in',sessionRef:'session-one',operationRef:'op1',scopes:['orders:read']});
-  await click('领取登录结果');assert.deepEqual(f.calls.at(-1),{action:'account/collect',transactionRef:'tx-user'});assert(!screen.queryByRole('link'));
+  await click('领取登录结果');assert.deepEqual(f.calls.at(-1),{action:'account/collect',transactionRef:'tx-user'});assert(!screen.queryByRole('link',{name:'在浏览器中完成账户登录'}));
   fireEvent.click(screen.getByText('账户与登录（可选）'));
   await click('建立账户连接');await click('刷新账户');assert.deepEqual(f.calls.at(-1),{action:'account/refresh',accountSlot:'account-user'});await click('退出账户');assert.deepEqual(f.calls.at(-1),{action:'account/sign-out',accountSlot:'account-user'});
   assert(!JSON.stringify(f.calls).includes('verifier'));assert(!JSON.stringify(f.calls).includes('claim_secret'));f.controller.dispose();
@@ -130,4 +130,15 @@ test('PAP settings: an account session is never selected automatically for a new
   assert.equal((screen.getByRole('button',{name:'允许 Agent 调用'}) as HTMLButtonElement).disabled,true);
   assert.deepEqual(f.calls,[]);
   f.controller.dispose();
+});
+
+test('PAP settings: the community example is visible and fills only the Company draft without any network or permission action',async()=>{
+  const f=world('ready');await show(f);
+  const link=screen.getByRole('link',{name:'agent-network-protocol.com'});
+  assert.equal(link.getAttribute('href'),'https://agent-network-protocol.com');
+  assert.equal(link.getAttribute('rel'),'noopener noreferrer');
+  assert(screen.getByText(/访问 ANP 社区官网/));
+  await click('填入示例域名');
+  assert.equal((screen.getByLabelText('Company 域名')as HTMLInputElement).value,'agent-network-protocol.com');
+  assert.deepEqual(f.calls,[]);f.controller.dispose();
 });
