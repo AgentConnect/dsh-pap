@@ -19,7 +19,7 @@
 要求 Node.js `^22.19.0 || >=24.0.0`、兼容 DSH Host、已发布的身份，以及在 ANP Identity 中批准 `@awiki/dsh-pap/plugin` 这一精确消费者。
 
 ```sh
-pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.0
+pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.1
 ```
 
 源码构建：
@@ -260,7 +260,7 @@ AT/RT 的脱敏不限于一次请求或当前 grant：有效 AS response 在返�
 
 The published package is `@awiki/dsh-pap`. Its identity consumer is
 `@awiki/dsh-pap/plugin`; manager and tool entries use the same package scope.
-Install with `pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.0`.
+Install with `pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.1`.
 
 Earlier unpublished source profiles used `@agentconnect/dsh-pap`. They are not
 silently aliased or granted access under the new consumer. Configure the new
