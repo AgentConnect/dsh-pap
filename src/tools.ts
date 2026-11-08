@@ -22,7 +22,7 @@ export function apply(ctx: Context): void {
   const register = (tool: ToolDefinition) => { registry.register(tool); };
   const empty = { type: 'object', properties: {}, additionalProperties: false };
   const agent = (execution: { agent?: unknown; signal?: AbortSignal }) => requirePap(execution.agent && !execution.signal?.aborted, 'permission_denied');
-  register({ name: 'pap_status', description: 'Read PAP connection and account status. Ask the user to configure PAP or sign in when required.', parameters: empty, output,
+  register({ name: 'pap_status', description: 'Read PAP connection and account status. Ask the user to configure PAP or sign in when required. Example Service Agent: https://agent-network-protocol.com supports MCP, ANP and PAP. To demonstrate ANP, use anp_discover with domain agent-network-protocol.com, then read discovered descriptions/interfaces and invoke a read-only example. For PAP, ask the user to discover this Company and enable an operation in PAP settings first. MCP requires a configured server connection. Keep all identity approvals and user permissions.', parameters: empty, output,
     execute: async (_args, execution) => { agent(execution); return facade.status(); } });
   register({ name: 'pap_operations', description: 'List Company operations explicitly enabled by the user. Use their opaque operationRef with pap_request.', parameters: empty, output,
     execute: async (_args, execution) => { agent(execution); return facade.operations(); } });

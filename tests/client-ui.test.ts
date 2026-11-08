@@ -43,7 +43,7 @@ test('PAP settings: explicit identity, Company, Session and operation permission
   const f=world();await show(f);assert(!JSON.stringify(f.controller.getSnapshot()).includes('must-not-enter-snapshot'));
   fireEvent.change(screen.getByLabelText('PAP 身份'),{target:{value:identityKey(ref)}});await click('使用此身份');
   fireEvent.change(screen.getByLabelText('Company 域名'),{target:{value:'company.example'}});await click('发现 Company');await click('建立未登录连接');
-  fireEvent.change(screen.getByLabelText('连接 GET /orders'),{target:{value:'session-one'}});await click('允许 Agent 调用');
+  await click('允许 Agent 调用');
   assert.deepEqual(f.calls.slice(0,4),[{action:'identity/select',reference:ref},{action:'company/discover',domain:'company.example'},{action:'session/connect',companyRef:'cmp1'},{action:'operation/enable',operationRef:'op1',sessionRef:'session-one',scopes:[]}]);
   await click('撤销操作许可');assert.equal(f.calls.at(-1).action,'operation/disable');assert(!JSON.stringify(f.calls).includes('policyRef'));assert(!JSON.stringify(f.calls).includes('targetRef'));
   f.controller.dispose();
@@ -51,10 +51,12 @@ test('PAP settings: explicit identity, Company, Session and operation permission
 test('PAP settings: browser login link is user-only, explicit and isolated from credential/callback payloads',async()=>{
   const f=world('ready');f.state.companies=[{companyRef:'cmp1',name:'Company',authMode:'account',scopes:['orders:read']}];f.state.sessions=[{sessionRef:'session-one',companyRef:'cmp1',connected:true,account:false}];f.operations.push({operationRef:'op1',companyRef:'cmp1',method:'GET',path:'/orders',enabled:false,account:false});
   let opened=0;dom.window.open=()=>{opened++;return null;};await show(f);
+  fireEvent.click(screen.getByText('高级：连接与账户权限'));
   fireEvent.change(screen.getByLabelText('连接 GET /orders'),{target:{value:'session-one'}});fireEvent.click(screen.getByLabelText('orders:read'));await click('发起账户登录');
   const link=screen.getByRole('link',{name:'在浏览器中完成账户登录'});assert.equal(link.getAttribute('target'),'_blank');assert.equal(link.getAttribute('rel'),'noopener noreferrer');assert(link.getAttribute('href')!.includes('state=user-state'));assert.equal(opened,0);
   assert.deepEqual(f.calls[0],{action:'account/sign-in',sessionRef:'session-one',operationRef:'op1',scopes:['orders:read']});
   await click('领取登录结果');assert.deepEqual(f.calls.at(-1),{action:'account/collect',transactionRef:'tx-user'});assert(!screen.queryByRole('link'));
+  fireEvent.click(screen.getByText('账户与登录（可选）'));
   await click('建立账户连接');await click('刷新账户');assert.deepEqual(f.calls.at(-1),{action:'account/refresh',accountSlot:'account-user'});await click('退出账户');assert.deepEqual(f.calls.at(-1),{action:'account/sign-out',accountSlot:'account-user'});
   assert(!JSON.stringify(f.calls).includes('verifier'));assert(!JSON.stringify(f.calls).includes('claim_secret'));f.controller.dispose();
 });
@@ -96,4 +98,36 @@ test('PAP browser artifact is a distinct module-loader client and contains no Ho
   assert.equal(inputs.hostModulesIncluded,false);assert(!inputs.inputs.some((path:string)=>/src\/(plugin|store|keyring|credential-history|protocol-adapter|client)\.ts$/.test(path)));
   for(const name of ['NativeStore','getEncryptionKey','bindPapHostConsumer','DeviceAccess','credentialVault','node:fs'])assert(!bytes.includes(name));
   const host=await readFile(new URL('../lib/client.js',import.meta.url),'utf8');assert(host.includes('class PapClient'));assert(!host.includes('window.__ModuleLoader__'));
+});
+
+test('PAP settings: active identity is shown and NoAS diagnostics start folded without creating extra sessions',async()=>{
+  const f=world('ready');f.state.identity=ref;
+  f.state.companies=[{companyRef:'cmp1',name:'Demo',authMode:'no_as',scopes:[]}];
+  f.state.sessions=[1,2,3,4].map(i=>({sessionRef:'session-'+i,companyRef:'cmp1',connected:true,account:false}));
+  f.operations.push({operationRef:'op1',companyRef:'cmp1',method:'GET',path:'/hello',enabled:false,account:false});
+  await show(f);
+  assert.equal((screen.getByLabelText('PAP 身份') as HTMLSelectElement).value,identityKey(ref));
+  assert.equal((screen.getByRole('button',{name:'连接已建立'}) as HTMLButtonElement).disabled,true);
+  assert.equal(screen.queryByRole('button',{name:'发起账户登录'}),null);
+  assert.equal(screen.getByLabelText('连接 GET /hello').closest('details')!.open,false);
+  const diagnostics=screen.getByText('连接管理与诊断（4 个连接）').closest('details')!;
+  assert.equal(diagnostics.open,false);
+  assert.equal(screen.getByRole('button',{name:'断开连接 ession-1'}).closest('details')!.open,false);
+  await click('允许 Agent 调用');
+  assert.deepEqual(f.calls,[{action:'operation/enable',operationRef:'op1',sessionRef:'session-1',scopes:[]}]);
+  assert.equal(f.state.sessions.length,4);
+  fireEvent.click(screen.getByText('连接管理与诊断（4 个连接）'));
+  assert.equal(diagnostics.open,true);
+  assert(screen.getByRole('button',{name:'断开连接 ession-1'}));
+  f.controller.dispose();
+});
+test('PAP settings: an account session is never selected automatically for a new operation',async()=>{
+  const f=world('ready');
+  f.state.companies=[{companyRef:'cmp1',name:'Demo',authMode:'account',scopes:['orders:read']}];
+  f.state.sessions=[{sessionRef:'account-only',companyRef:'cmp1',connected:true,account:true,accountSlot:'account-user'}];
+  f.operations.push({operationRef:'op1',companyRef:'cmp1',method:'GET',path:'/orders',enabled:false,account:false});
+  await show(f);
+  assert.equal((screen.getByRole('button',{name:'允许 Agent 调用'}) as HTMLButtonElement).disabled,true);
+  assert.deepEqual(f.calls,[]);
+  f.controller.dispose();
 });
