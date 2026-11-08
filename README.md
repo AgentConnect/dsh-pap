@@ -1,3 +1,11 @@
+# Local runtime compatibility snapshot
+
+> This branch preserves the existing local `@agentconnect/dsh-pap` consumer and
+> encrypted-state binding only. Do not publish it to npm. The maintained public
+> package is `@awiki/dsh-pap` on `feat/dsh-shared-agent-identity`.
+> UI and tool-contract fixes are mirrored here so the running Mac demo does not
+> require an implicit identity-policy or encrypted-state migration.
+
 # DSH PAP 0.3
 
 Apache-2.0-licensed DSH Host plugin and PAP client. The protocol baseline is

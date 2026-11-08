@@ -22,15 +22,15 @@ export function apply(ctx: Context): void {
   const register = (tool: ToolDefinition) => { registry.register(tool); };
   const empty = { type: 'object', properties: {}, additionalProperties: false };
   const agent = (execution: { agent?: unknown; signal?: AbortSignal }) => requirePap(execution.agent && !execution.signal?.aborted, 'permission_denied');
-  register({ name: 'pap_status', description: 'Read PAP connection and account status. Ask the user to configure PAP or sign in when required.', parameters: empty, output,
+  register({ name: 'pap_status', description: 'Read PAP connection and account status. Ask the user to configure PAP or sign in when required. Example Service Agent: https://agent-network-protocol.com supports MCP, ANP and PAP. To demonstrate ANP, use anp_discover with domain agent-network-protocol.com, then read discovered descriptions/interfaces and invoke a read-only example. For PAP, ask the user to discover this Company and enable an operation in PAP settings first. MCP requires a configured server connection. Keep all identity approvals and user permissions.', parameters: empty, output,
     execute: async (_args, execution) => { agent(execution); return facade.status(); } });
   register({ name: 'pap_operations', description: 'List Company operations explicitly enabled by the user. Use their opaque operationRef with pap_request.', parameters: empty, output,
     execute: async (_args, execution) => { agent(execution); return facade.operations(); } });
-  register({ name: 'pap_request', description: 'Invoke one user-enabled Company operation. Supply its operationRef and only declared path/query parameters and optional JSON body. Account sign-in is a separate user action.',
+  register({ name: 'pap_request', description: 'Invoke one user-enabled Company operation. Supply its operationRef and only declared path/query parameters and optional JSON body. Path and query values must be strings, including numeric parameters (for example query: {page: "1"}). Account sign-in is a separate user action.',
     parameters: { type: 'object', additionalProperties: false, required: ['operationRef'], properties: {
       operationRef: { type: 'string' },
-      path: { type: 'object', additionalProperties: true },
-      query: { type: 'object', additionalProperties: true },
+      path: { type: 'object', description: 'Declared path parameter values encoded as strings.', additionalProperties: { type: 'string', maxLength: 1024 } },
+      query: { type: 'object', description: 'Declared query parameter values encoded as strings; use page: "1", not page: 1.', additionalProperties: { type: 'string', maxLength: 4096 } },
       body: {},
     } }, output,
     execute: async (args, execution) => { agent(execution); return facade.request(args, execution.signal); } });
