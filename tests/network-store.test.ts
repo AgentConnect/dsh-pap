@@ -25,7 +25,7 @@ test('F-T02 encrypted store cross-instance CAS serialization, wrong key/corrupti
   const root=await mkdtemp(join(tmpdir(),'pap-store-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const one=new PapStore(root,secrets,'fixture'); const two=new PapStore(root,secrets,'fixture');
   await Promise.all(Array.from({length:20},(_,i)=>(i%2?one:two).transaction(state=>{state.nonces.counter=String(Number(state.nonces.counter??0)+1);})));assert.equal((await one.read()).nonces.counter,'20');
-  assert.equal((await stat(join(root,'pap-state.enc'))).mode&0o777,0o600);
+  if(process.platform!=='win32')assert.equal((await stat(join(root,'pap-state.enc'))).mode&0o777,0o600);
   const wrong=new PapStore(root,{getEncryptionKey:async()=>new Uint8Array(32),getOrCreateEncryptionKey:async()=>new Uint8Array(32)},'fixture');await assert.rejects(wrong.read(),{code:'state_corrupt'});
   const bytes=await readFile(join(root,'pap-state.enc'));bytes[40]=bytes[40]!^1;await writeFile(join(root,'pap-state.enc'),bytes);await assert.rejects(one.read(),{code:'state_corrupt'});
 });
