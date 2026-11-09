@@ -1,5 +1,7 @@
 # DSH PAP
 
+Domain automatic access and exact-operation confirmation require `@agent-network-protocol/dsh-anp-identity >=0.1.14` in the same Host. The identity peer is optional for library-only use, but the domain plugin must have the new Host consent API. The supported policy is automatic discovered reads plus owner-approved one-shot writes; there is no full-write or chat-controlled global write setting in this release.
+
 **A PAP 0.3 client for DeepSeek Harness (DSH), powered by a reusable, locally held agent identity.**
 
 English | [简体中文](README.zh-CN.md)
@@ -63,7 +65,7 @@ The shared identity can publish DID, CIMD and JWKS material through an identity 
 Install the bundle when its package is available in your registry:
 
 ```sh
-pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.1
+pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.3
 ```
 
 Build and run unit/component checks from source:
@@ -193,3 +195,17 @@ configure and approve operations in the owner UI, then `pap_operations` and
 `pap_request`. URL path/query values are strings (e.g. `page: "1"`); JSON body
 values retain their types. NoAS is not an account-login flow. The identity plugin's
 `identity_connection_guide` remains available before PAP is configured.
+
+## Domain-based automatic connections and shared permissions
+
+Enable PAP and Host domain access once, then call `pap_connect({domain})`; do not configure a Company or permission for each domain. The candidate's Identity-owned **Protocol Management** page replaces the old PAP settings navigation. Its original browser component exports are no longer shipped by the client entry; encrypted legacy state and Host management diagnostics remain intact.
+
+The original discovery origin is retained across validated redirects and refreshes. `pap_operations()` includes bounded inline `bodySchema` documentation and `operationId`; unavailable or external-reference schemas are explicitly marked and never fetched automatically. Unrelated legacy discoveries are marked for rediscovery without breaking a fresh domain connection. It returns every discovered operation with `effect`, `permission` (`allow`, `ask`, `deny`), `requiresApproval` and `blocked`. Every business call checks the shared read/write policy; the previously enabled read catalog cannot bypass a new denial. Allow executes without repeated confirmation but does not persist a route grant. Ask opens the global exact-operation dialog. Deny or explicit operation disable sends nothing. Account OAuth credentials remain separate and their scopes are never widened by these rules.
+
+Classification uses the discovered method, body/security declarations and optional `x-agent-effect` / `x-agent-annotations` semantics; explicit read-only POST queries are supported. Unknown effects, declared payments and extra privileges still ask under all-write permission. Identity Host 0.1.15 or later is required; absence of its policy API fails closed, without a legacy permission fallback. Final dependency versions will be pinned before release.
+
+`approvalWaitMs` defaults to 120000 (0–600000); `approvalPollMs` defaults to 1000 (10–10000). A timed-out pending request retains its original bound consent facade. Its key includes identity, Host policy, shared-policy version and exact request. Cancellation/unload cancels pending work. All relevant identity, policy, owner-denial, session and credential guards are rechecked before physical send; once-approved or policy-allowed mutations are never automatically replayed after session, token or nonce responses.
+
+Failed `pap_request` results add `phase` and `businessRequest`: `not_sent` means no business transport call began, `unknown` means a transport attempt without a received response, and `response_received` retains `httpStatus` even when a later local permission check fails. These fields do not expose credentials, prove delivery of an attempted request, or justify retrying an uncertain write. The local candidate is jointly verified on both services through all three protocols; use Identity 0.1.15 with adapter 0.1.4.
+
+Identity 0.1.15 provides `protocol_permissions` and `identity_settings` for owner-confirmed persistent settings changes from the Agent. A fresh explicit `pap_connect` adopts the saved default identity/epoch without deleting stored sessions or credentials; in-flight requests keep their old engine/identity fences. Configuration approval does not approve a business request or grant generic signing.

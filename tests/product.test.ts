@@ -16,16 +16,18 @@ import { binding, FixtureHost, FixtureTransport, jsonResponse, secrets } from '.
 import { publicResponse } from '../src/product-operations.js';
 import { publicResult } from '../src/plugin.js';
 import { PapClient } from '../src/client.js';
+import type { PolicyClient, PolicyClassification } from '../src/protocol-policy.js';
 
 type Value = Record<string, any>;
 function value(result: ProductResult): Value { assert.equal(result.ok, true, result.ok ? undefined : result.error.code); return (result as { value: Value }).value; }
-function error(result: ProductResult, code: string) { assert.deepEqual(result, { ok: false, error: { code } }); }
+function error(result: ProductResult, code: string) { assert.equal(result.ok,false); if(result.ok)throw new Error('Expected refusal'); assert.equal(result.error.code,code); assert(Object.keys(result.error).every(key=>['code','phase','businessRequest','httpStatus','retryAfterSeconds','approval'].includes(key))); }
 
 /** Unit C boundary with real fixture cryptography. This is not evidence for the C factory. */
-async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?: FixtureTransport['mode']; missingConfig?: boolean; blockedSecrets?: boolean; missingFactory?: boolean } = {}) {
+async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?: FixtureTransport['mode']; missingConfig?: boolean; blockedSecrets?: boolean; missingFactory?: boolean; autoConnect?: boolean; approvalWaitMs?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'pap-product-unit-'));
   const ctx = new Context(); const host = new FixtureHost(); const transport = new FixtureTransport(); transport.mode = options.mode ?? 'none';
   const tools = new Map<string, any>(); const targetRefs = new WeakSet<object>(); const contexts: Context[] = []; const namespaces: string[] = []; let providerGeneration = 1; let registerCount = 0; let claimCount = 0; let disposedCallbacks = 0; let response: { state: string; iss: string; code: string } | undefined;
+  let domainPolicyRef = 'host-approved';
   const protocol: ProtocolIdentityClient = {
     registerValidatedTarget: async input => {
       const targetRef = {}; targetRefs.add(targetRef);
@@ -52,7 +54,7 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   };
   const consumer: PapHostConsumer = {
     assertActive: () => requirePap(host.active, 'permission_denied'), dispose() {},
-    resolveBinding: async (reference, policyRef, profile) => { assert.deepEqual(reference, binding.identityRef); assert.equal(policyRef, 'host-approved'); return { binding, ...(profile === 'pap_account' ? { redirectUri: 'https://agent.example/pap-callback' } : {}) }; },
+    resolveBinding: async (reference, policyRef, profile) => { assert.deepEqual(reference, binding.identityRef); assert.equal(policyRef, domainPolicyRef); return { binding, ...(profile === 'pap_account' ? { redirectUri: 'https://agent.example/pap-callback' } : {}) }; },
     callbackManagementFor: async input => {
       assert(targetRefs.has(input.targetRef)); assert.deepEqual(input.identityRef, binding.identityRef); assert.equal(input.policyRef, 'host-approved');
       return { execute: (async (operation: any) => {
@@ -61,7 +63,67 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
       }) as any, dispose() { disposedCallbacks++; } };
     },
   };
+  let domainEnabled = true;
+  let consentDecision = {id:'fixture-consent',status:'pending',version:1,grantId:undefined as string|undefined,mode:undefined as string|undefined};
+  let consentBindings = 0;
+  let consentRequests = 0, consentExecutions = 0, consentCancels = 0, consentActive = true;
+  let consentRequest: Request | undefined;
+  let expectedRequest: string | undefined;
+  let policyVersion=0;
+  const decisions:Record<PolicyClassification['effect'],'allow'|'ask'|'deny'>={read:'allow',write:'ask',unknown:'ask',payment:'ask'};
+  const policyTargets=new WeakSet<object>();
+  const policy:PolicyClient={
+    async assertNoDenial(request){assert(!request.headers.has('poppy-session'));},
+    classifyHttp(input){
+      const security=input.security;
+      const extraPermissions=security!==undefined&&(!Array.isArray(security)||security.some(item=>!item||typeof item!=='object'||Object.values(item).some(value=>!Array.isArray(value)||value.length>0)));
+      const effect=input.declaredEffect==='payment'?'payment':input.declaredEffect==='read'?'read':input.declaredEffect==='write'?'write'
+        :['GET','HEAD'].includes(input.method)?input.hasRequestBody?'unknown':'read':'write';
+      return {effect,extraPermissions};
+    },
+    register(input){assert(input.discoveryOrigin.startsWith('https://'));const target={protocolTarget:true as const};policyTargets.add(target);return target;},
+    forget(target){policyTargets.delete(target);},
+    async evaluate(target,input){
+      assert(policyTargets.has(target));const version=policyVersion;
+      const selected=decisions[input.effect],decision=selected==='deny'?'deny':input.extraPermissions||input.effect==='payment'||input.effect==='unknown'?'ask':selected;
+      return {decision,version,async assertActive(){if(!policyTargets.has(target)||version!==policyVersion||decision==='deny')throw Object.assign(new Error('Policy changed'),{code:'protocol_policy_changed'});}};
+    },
+  };
+  const requestFingerprint = async (request: Request) => JSON.stringify([request.method,request.url,[...request.headers],await request.clone().text()]);
+  const consent = {
+    async request(input: {requestId:string;purpose:string;request:Request}) {
+      assert(input.purpose.startsWith('PAP exact operation'));
+      assert(!input.request.headers.has('poppy-session') && !input.request.headers.has('authorization') && !input.request.headers.has('dpop'));
+      consentRequests++; consentRequest=input.request.clone(); expectedRequest=await requestFingerprint(input.request);
+      return {...consentDecision};
+    },
+    async status(id: string) {assert.equal(id,consentDecision.id);return {...consentDecision};},
+    async cancel(id: string) {assert.equal(id,consentDecision.id);consentCancels++;consentDecision.status='cancelled';return {...consentDecision};},
+    async execute<T>(grantId: string, request: Request, effect: (assertActive:()=>Promise<void>)=>Promise<T>): Promise<T> {
+      assert.equal(grantId,'once-grant');assert.equal(consentDecision.mode,'once');assert.equal(consentDecision.status,'approved');
+      assert.equal(await requestFingerprint(request),expectedRequest);
+      consentExecutions++;consentDecision.status='consumed';
+      const check=async()=>{if(!consentActive)throw Object.assign(new Error('Revoked'),{code:'grant_inactive'});};
+      await check();const response=await effect(check);await check();return response;
+    },
+  };
   ctx.provide('anpIdentity', {
+    bindProtocolPolicy(context:Context,protocol:string){contexts.push(context);assert.equal(protocol,'pap');return policy;},
+    bindDomainOperationConsumer(context: Context) {
+      contexts.push(context); consentBindings++;
+      const owned = new Set<string>();
+      return {
+        async request(input: Parameters<typeof consent.request>[0]) { const decision = await consent.request(input); owned.add(decision.id); return decision; },
+        async status(id: string) { if (!owned.has(id)) throw Object.assign(new Error('Request belongs to a different bound facade'), {code:'consumer_forbidden'}); return consent.status(id); },
+        async cancel(id: string) { if (!owned.has(id)) throw Object.assign(new Error('Request belongs to a different bound facade'), {code:'consumer_forbidden'}); return consent.cancel(id); },
+        execute: consent.execute,
+      };
+    },
+    async resolveDomainAccess(context: Context, profile: string) {
+      assert.equal(profile, 'pap_session'); contexts.push(context);
+      if (!domainEnabled) throw Object.assign(new Error('Disabled'), {code:'domain_access_disabled'});
+      return { identityRef: binding.identityRef, policyRef: domainPolicyRef, stateRoot: root, secretsRoot: root + '-keys', secretStore: 'local-file' };
+    },
     ...(options.missingFactory ? {} : { bindPapHostConsumer(context: Context) {
       contexts.push(context); const generation = providerGeneration; let disposed = false;
       return { ...consumer, assertActive() { if (disposed || generation !== providerGeneration) throw Object.assign(new Error('Disposed fixture facade'), { code: 'provider_disposed' }); consumer.assertActive(); }, dispose() { disposed = true; } };
@@ -76,13 +138,17 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   await ctx.plugin(Loader, {}); const loader = ctx.get('loader') as Loader;
   const modules: Record<string, unknown> = { [PAP_CONSUMER]: plugin, [PAP_MANAGER]: ManagerRemote, [PAP_TOOLS]: toolPlugin };
   loader.import = async name => { assert(Object.hasOwn(modules, name)); return modules[name]; };
-  const config = options.missingConfig ? { enabled: true } : { enabled: options.enabled ?? true, stateRoot: root, policyRef: 'host-approved', keyringService: 'pap-isolated-unit-never-created' };
+  const config = options.autoConnect ? { enabled: true, autoConnect: true, approvalWaitMs: options.approvalWaitMs ?? 2000, approvalPollMs: 10 } : options.missingConfig ? { enabled: true } : { enabled: options.enabled ?? true, stateRoot: root, policyRef: 'host-approved', keyringService: 'pap-isolated-unit-never-created' };
   await loader.create({ name: PAP_CONSUMER, config });
   await loader.create({ name: PAP_MANAGER }); await loader.create({ name: PAP_TOOLS }); await loader.await();
   const service = ctx.pap; const manager = ctx.get('papManager') as unknown as InstanceType<typeof ManagerRemote>;
-  const execute = async (name: string, args: unknown = {}) => tools.get(name).execute(args, { agent: {}, signal: new AbortController().signal });
-  t.after(async () => { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }); });
-  return { root, ctx, loader, host, transport, service, manager, execute, tools, contexts, namespaces, config, select: async () => manager.manage({ action: 'identity/select', reference: binding.identityRef }),
+  const execute = async (name: string, args: unknown = {}, signal = new AbortController().signal) => tools.get(name).execute(args, { agent: {}, signal });
+  t.after(async () => { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }); await rm(root + '-keys', { recursive: true, force: true }); });
+  return { root, ctx, loader, host, transport,
+    policy:{set(effect:PolicyClassification['effect'],decision:'allow'|'ask'|'deny'){decisions[effect]=decision;policyVersion++;}},
+    consent: {approve(mode='once') {consentDecision={...consentDecision,status:'approved',grantId:'once-grant',mode};},deny(){consentDecision.status='denied';},revoke(){consentActive=false;},get bindings(){return consentBindings;},get requests(){return consentRequests;},get executions(){return consentExecutions;},get cancels(){return consentCancels;},get status(){return consentDecision.status;},get request(){return consentRequest;}},
+    changeDefaultEpoch() { domainPolicyRef += '-next'; },
+    disableDomain() { domainEnabled = false; }, service, manager, execute, tools, contexts, namespaces, config, select: async () => manager.manage({ action: 'identity/select', reference: binding.identityRef }),
     setResponse(value: typeof response) { response = value; }, advanceProvider() { providerGeneration++; },
     pauseNextKeyRead() { let entered!: () => void; let release!: () => void; const start = new Promise<void>(resolve => entered = resolve); const gate = new Promise<void>(resolve => release = resolve); pauseKey = { entered, gate }; return { start, release }; },
     get counts() { return { registerCount, claimCount, disposedCallbacks }; } };
@@ -121,7 +187,7 @@ test('PAP product: installed manager and tools are distinct, raw contexts and wi
   const entry = [...f.loader.entries()].find(value => value.options.name === PAP_CONSUMER)!;
   assert(f.contexts.every(context => context.fiber === (entry.fiber as any).ctx.fiber));
   error(await f.execute('pap_request', { operationRef: 'made-up', url: 'https://evil.example', scopes: [] }), 'permission_denied');
-  assert.deepEqual([...f.tools.keys()], ['pap_status','pap_operations','pap_request']);
+  assert.deepEqual([...f.tools.keys()], ['pap_connect','pap_status','pap_operations','pap_request']);
   assert(f.tools.get('pap_status').description.includes('https://agent-network-protocol.com'));
   assert(f.tools.get('pap_status').description.includes('supports MCP, ANP and PAP'));
 });
@@ -372,4 +438,236 @@ test('PAP product: callback collection revalidates expired discovery before requ
   const engine=(f.service as unknown as {client:PapClient}).client;await engine.store.transaction(state=>{for(const company of Object.values(state.companies))company.expiresAt=Date.now()-1;});
   const before=f.transport.calls.filter(call=>call.url.endsWith('poppy.json')).length;value(await f.manager.manage({action:'account/collect',transactionRef:pending.transactionRef}));
   assert.equal(f.transport.calls.filter(call=>call.url.endsWith('poppy.json')).length,before+1);assert.equal(f.counts.claimCount,1);
+});
+
+// Domain-mode product coverage uses the real Loader, store and signed-request path.
+test('PAP domain mode: discovers and connects once, enables only reads and preserves owner fences', async t => {
+  const f = await fixture(t, { autoConnect: true });
+  const first = value(await f.execute('pap_connect', { domain: 'shop.example' }));
+  assert(first.operations.length > 0);
+  assert(first.operations.every((operation: Value) => ['GET', 'HEAD'].includes(operation.method)));
+  assert.equal(value(await f.execute('pap_status')).sessions.length, 1);
+  const operation = first.operations.find((entry: Value) => entry.path === '/api/cart'); assert(operation);
+  assert.equal(value(await f.execute('pap_request', { operationRef: operation.operationRef })).status, 200);
+  await Promise.all([f.execute('pap_connect', { domain: 'shop.example' }), f.execute('pap_connect', { domain: 'shop.example' })]);
+  assert.equal(value(await f.execute('pap_status')).sessions.length, 1);
+  value(await f.manager.manage({ action: 'operation/disable', operationRef: operation.operationRef }));
+  const again = value(await f.execute('pap_connect', { domain: 'shop.example' }));
+  assert(!again.operations.some((entry: Value) => entry.operationRef === operation.operationRef));
+  error(await f.execute('pap_request', { operationRef: operation.operationRef }), 'permission_denied');
+  const status = value(await f.manager.status());
+  value(await f.manager.manage({ action: 'session/disconnect', sessionRef: status.sessions[0].sessionRef }));
+  error(await f.execute('pap_connect', { domain: 'shop.example' }), 'disconnected');
+  assert(!f.transport.calls.some(call => call.url.endsWith('/token')));
+});
+test('PAP domain mode: global opt-in is required and malformed domains never dispatch', async t => {
+  const f = await fixture(t, { autoConnect: true });
+  error(await f.execute('pap_connect', { domain: 'https://shop.example' }), 'unsafe_destination');
+  f.disableDomain();
+  error(await f.execute('pap_connect', { domain: 'shop.example' }), 'domain_access_disabled');
+  assert.equal(f.transport.calls.length, 0);
+  const legacy = await fixture(t);
+  error(await legacy.execute('pap_connect', { domain: 'shop.example' }), 'not_configured');
+  assert.equal(legacy.transport.calls.length, 0);
+});
+
+async function domainWrite(f: Awaited<ReturnType<typeof fixture>>, requiresApproval=true) {
+  value(await f.execute('pap_connect',{domain:'shop.example'}));
+  const operations=value(await f.execute('pap_operations')) as unknown as Value[];
+  const write=operations.find(operation=>operation.method==='POST'&&operation.path==='/api/cart'); assert(write);
+  assert.equal(write.enabled,!requiresApproval);assert.equal(write.requiresApproval,requiresApproval);
+  return write;
+}
+async function untilConsent(f: Awaited<ReturnType<typeof fixture>>) {
+  for(let index=0;index<100&&!f.consent.requests;index++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.equal(f.consent.requests,1);
+}
+test('PAP domain consent: an advertised write waits for one exact owner grant without enabling its route', async t=>{
+  const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);
+  const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{message:'approved body'}});
+  await untilConsent(f);assert.equal(f.transport.calls.filter(call=>call.options?.method==='POST'&&call.url.includes('/api/')).length,0);
+  assert.equal(await f.consent.request!.clone().text(),'{"message":"approved body"}');
+  f.consent.approve();assert.equal(value(await pending).status,200);assert.equal(f.consent.executions,1);
+  const current=value(await f.execute('pap_operations')) as unknown as Value[];
+  assert.equal(current.find(operation=>operation.operationRef===write.operationRef)!.enabled,false);
+  assert.equal(f.transport.calls.filter(call=>call.options?.method==='POST'&&call.url.includes('/api/')).length,1);
+});
+test('PAP domain consent: denial, timeout and permanent grants never send a write',async t=>{
+  for(const outcome of ['deny','timeout','permanent']){
+    const f=await fixture(t,{autoConnect:true,approvalWaitMs:outcome==='timeout'?20:2000});const write=await domainWrite(f);
+    const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{message:'not sent'}});
+    await untilConsent(f);
+    if(outcome==='deny')f.consent.deny();else if(outcome==='permanent')f.consent.approve('permanent');
+    const result=await pending;
+    if(outcome==='timeout')assert.deepEqual(result,{ok:false,error:{code:'identity_authorization_required',approval:{requestId:'fixture-consent',presentation:'dialog',status:'pending'},phase:'approval',businessRequest:'not_sent'}});
+    else error(result,outcome==='deny'?'identity_authorization_denied':'permission_denied');
+    assert.equal(f.consent.executions,0);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,0);
+  }
+});
+test('PAP domain consent: cancellation and unload cancel pending approval and never send after a late click',async t=>{
+  for(const unload of [false,true]){
+    const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);const controller=new AbortController();
+    const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{}},controller.signal);
+    await untilConsent(f);
+    if(unload)await f.ctx.fiber.dispose();else controller.abort();
+    error(await pending,'disconnected');assert.equal(f.consent.cancels,1);assert.equal(f.consent.status,'cancelled');f.consent.approve();
+    assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,0);
+  }
+});
+test('PAP domain consent: disable/disconnect/revocation while awaiting or signing fences actual send',async t=>{
+  for(const action of ['disable','disconnect','revoke']){
+    const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);
+    if(action==='revoke'){
+      const acquire=f.host.acquire.bind(f.host);
+      f.host.acquire=async(...args)=>{const lease=await acquire(...args);return {...lease,signPapSessionRequest:async input=>{const signed=await lease.signPapSessionRequest(input);f.consent.revoke();return signed;}};};
+    }
+    const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{}});await untilConsent(f);
+    if(action==='disable')value(await f.manager.manage({action:'operation/disable',operationRef:write.operationRef}));
+    if(action==='disconnect'){const status=value(await f.manager.status());value(await f.manager.manage({action:'session/disconnect',sessionRef:status.sessions[0].sessionRef}));}
+    f.consent.approve();const result=await pending;assert.equal(result.ok,false);
+    assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,0);
+  }
+});
+test('PAP domain consent: a session_ended response cannot replay a once-approved POST',async t=>{
+  const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);
+  f.transport.override=(url,options)=>url.includes('/api/cart')&&options?.method==='POST'?jsonResponse(url,{error:'session_ended'},409):undefined;
+  const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{}});await untilConsent(f);f.consent.approve();
+  const result=await pending;error(result,'session_ended');assert(!result.ok);assert.equal(result.error.businessRequest,'response_received');assert.equal(result.error.httpStatus,409);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);
+});
+
+test('PAP domain consent: GET operations with advertised extra scopes are not automatic reads',async t=>{
+  const f=await fixture(t,{autoConnect:true});
+  f.transport.override=url=>new URL(url).pathname==='/openapi.json'?jsonResponse(url,{openapi:'3.1.0',servers:[{url:'https://shop.example'}],paths:{'/api/extra':{get:{security:[{oauth:['account.read']}]}}}}):undefined;
+  const connected=value(await f.execute('pap_connect',{domain:'shop.example'}));assert.deepEqual(connected.operations,[]);
+  const operations=value(await f.execute('pap_operations')) as unknown as Value[];assert.equal(operations.length,1);
+  assert.equal(operations[0]!.requiresApproval,true);assert.equal(operations[0]!.enabled,false);
+  const pending=f.execute('pap_request',{operationRef:operations[0]!.operationRef});await untilConsent(f);
+  assert.equal(f.transport.calls.filter(call=>call.url.endsWith('/api/extra')).length,0);f.consent.approve();
+  assert.equal(value(await pending).status,200);assert.equal(f.consent.executions,1);
+});
+
+test('PAP domain consent: timeout retries preserve the original request owner until approval',async t=>{
+  const f=await fixture(t,{autoConnect:true,approvalWaitMs:0});const write=await domainWrite(f);
+  const args={operationRef:write.operationRef,body:{message:'same exact request'}};
+  const first=await f.execute('pap_request',args);assert.equal(first.ok,false);
+  const again=await f.execute('pap_request',args);assert.deepEqual(again,first);
+  assert.equal(f.consent.requests,1);assert.equal(f.consent.bindings,1);
+  assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,0);
+  f.consent.approve();const approved=value(await f.execute('pap_request',args));assert.equal(approved.status,200);
+  assert.equal(f.consent.executions,1);assert.equal(f.consent.requests,1);
+  assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,1);
+});
+test('PAP domain consent: a refused pending request stays refused on retry without sending',async t=>{
+  const f=await fixture(t,{autoConnect:true,approvalWaitMs:0});const write=await domainWrite(f);
+  const args={operationRef:write.operationRef,body:{message:'refused'}};
+  await f.execute('pap_request',args);f.consent.deny();
+  error(await f.execute('pap_request',args),'identity_authorization_denied');
+  assert.equal(f.consent.requests,1);assert.equal(f.consent.executions,0);
+  assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,0);
+});
+
+test('PAP business diagnostics do not report an attempted transport failure as definitely unsent',async t=>{
+  const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);
+  f.transport.override=(url,options)=>{if(url.includes('/api/cart')&&options?.method==='POST')throw new Error('Isolated lost response');return undefined;};
+  const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{}});await untilConsent(f);f.consent.approve();
+  const result=await pending;assert(!result.ok);assert.equal(result.error.businessRequest,'unknown');assert.equal(result.error.phase,'request');
+  assert.equal(f.consent.executions,1);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);
+});
+
+test('PAP business diagnostics retain a received response when a later local consent check fails',async t=>{
+  const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);
+  f.transport.override=(url,options)=>{if(url.includes('/api/cart')&&options?.method==='POST'){f.consent.revoke();return jsonResponse(url,{created:true},200);}return undefined;};
+  const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{}});await untilConsent(f);f.consent.approve();
+  const result=await pending;assert(!result.ok);assert.equal(result.error.businessRequest,'response_received');assert.equal(result.error.httpStatus,200);
+  assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);
+});
+
+test('PAP shared policy: all writes execute without a dialog but do not persist route permission',async t=>{
+  const f=await fixture(t,{autoConnect:true});f.policy.set('write','allow');const write=await domainWrite(f,false);
+  assert.equal(value(await f.execute('pap_request',{operationRef:write.operationRef,body:{content:'owner-enabled write'}})).status,200);
+  assert.equal(f.consent.requests,0);assert.equal(f.consent.executions,0);
+  assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);
+  const state=await (f.service as unknown as {client:PapClient}).client.store.read();assert.equal(state.product?.operations[write.operationRef],undefined);
+});
+test('PAP shared policy: read and write denials both prevent business dispatch, including formerly enabled reads',async t=>{
+  const f=await fixture(t,{autoConnect:true});const connected=value(await f.execute('pap_connect',{domain:'shop.example'}));
+  const read=connected.operations.find((entry:Value)=>entry.path==='/api/cart');
+  const write=value(await f.execute('pap_operations')).find((entry:Value)=>entry.method==='POST');
+  f.policy.set('read','deny');f.policy.set('write','deny');
+  error(await f.execute('pap_request',{operationRef:read.operationRef}),'protocol_permission_denied');
+  error(await f.execute('pap_request',{operationRef:write.operationRef,body:{}}),'protocol_permission_denied');
+  assert(value(await f.execute('pap_operations')).filter((entry:Value)=>[read.operationRef,write.operationRef].includes(entry.operationRef)).every((entry:Value)=>entry.blocked));
+  assert.equal(f.consent.requests,0);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,0);
+});
+test('PAP shared policy: revocation during signing invalidates allowed reads and writes before physical send',async t=>{
+  for(const method of ['GET','POST']){
+    const f=await fixture(t,{autoConnect:true});f.policy.set('write','allow');await f.execute('pap_connect',{domain:'shop.example'});
+    const operation=value(await f.execute('pap_operations')).find((entry:Value)=>entry.path==='/api/cart'&&entry.method===method);
+    let entered!:()=>void,release!:()=>void;const start=new Promise<void>(resolve=>entered=resolve),gate=new Promise<void>(resolve=>release=resolve);t.after(release);
+    const acquire=f.host.acquire.bind(f.host);
+    f.host.acquire=async(...args)=>{const lease=await acquire(...args),sign=lease.signPapSessionRequest;lease.signPapSessionRequest=async input=>{const result=await sign(input);entered();await gate;return result;};return lease;};
+    const pending=f.execute('pap_request',{operationRef:operation.operationRef,...(method==='POST'?{body:{}}:{})});
+    await start;f.policy.set(method==='POST'?'write':'read','deny');release();
+    const result=await pending;error(result,'protocol_policy_changed');assert(!result.ok);assert.equal(result.error.businessRequest,'not_sent');
+    assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,0);
+  }
+});
+test('PAP shared policy: an allowed POST is never replayed after session_ended and retains received-response diagnostics',async t=>{
+  const f=await fixture(t,{autoConnect:true});f.policy.set('write','allow');const write=await domainWrite(f,false);
+  f.transport.override=(url,options)=>url.includes('/api/cart')&&options?.method==='POST'?jsonResponse(url,{error:'session_ended'},409):undefined;
+  const result=await f.execute('pap_request',{operationRef:write.operationRef,body:{}});error(result,'session_ended');
+  assert(!result.ok);assert.equal(result.error.httpStatus,409);assert.equal(result.error.businessRequest,'response_received');
+  assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);assert.equal(f.consent.requests,0);
+});
+test('PAP shared policy: response-time revocation reports a received response, not an unsent write',async t=>{
+  const f=await fixture(t,{autoConnect:true});f.policy.set('write','allow');const write=await domainWrite(f,false);
+  f.transport.override=(url,options)=>{if(url.includes('/api/cart')&&options?.method==='POST'){f.policy.set('write','deny');return jsonResponse(url,{created:true},200);}return undefined;};
+  const result=await f.execute('pap_request',{operationRef:write.operationRef,body:{}});error(result,'protocol_policy_changed');
+  assert(!result.ok);assert.equal(result.error.httpStatus,200);assert.equal(result.error.businessRequest,'response_received');
+  assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);
+});
+test('PAP shared policy: explicit POST read semantics use read rules, while declared payments still ask under all-write permission',async t=>{
+  const f=await fixture(t,{autoConnect:true});f.policy.set('write','allow');
+  f.transport.override=url=>new URL(url).pathname==='/openapi.json'?jsonResponse(url,{openapi:'3.1.0',paths:{
+    '/api/query':{post:{'x-agent-effect':'read',requestBody:{}}},'/api/pay':{post:{'x-agent-effect':'payment',requestBody:{}}},
+  }}):undefined;
+  const connected=value(await f.execute('pap_connect',{domain:'shop.example'}));assert(connected.operations.some((entry:Value)=>entry.path==='/api/query'&&entry.method==='POST'));
+  const operations=value(await f.execute('pap_operations')),read=operations.find((entry:Value)=>entry.path==='/api/query'),pay=operations.find((entry:Value)=>entry.path==='/api/pay');
+  await f.execute('pap_request',{operationRef:read.operationRef,body:{query:'read'}});assert.equal(f.consent.requests,0);
+  const pending=f.execute('pap_request',{operationRef:pay.operationRef,body:{amount:1}});await untilConsent(f);
+  assert.equal(f.transport.calls.filter(call=>call.url.endsWith('/api/pay')).length,0);f.consent.approve();await pending;
+  assert.equal(f.consent.executions,1);assert.equal(f.transport.calls.filter(call=>call.url.endsWith('/api/pay')).length,1);
+});
+test('PAP shared policy: an unrelated legacy discovery cache cannot poison a fresh domain connection',async t=>{
+  const f=await fixture(t,{autoConnect:true});value(await f.execute('pap_connect',{domain:'shop.example'}));
+  const engine=(f.service as unknown as {client:PapClient}).client;
+  await engine.store.transaction(state=>{
+    const existing=Object.values(state.companies)[0]!;
+    const {discoveryOrigin:_origin,...legacy}=existing;
+    state.companies['legacy-company']={...legacy,ref:'legacy-company',domain:'old.example',companyId:'https://old.example',routes:[{method:'GET',template:'https://old.example/api/old',resource:'https://old.example'}]};
+  });
+  const connected=value(await f.execute('pap_connect',{domain:'shop.example'}));assert(connected.operations.length>0);
+  const operations=value(await f.execute('pap_operations')) as Value[];
+  assert.equal(operations.find(operation=>operation.path==='/api/old')?.unavailableReason,'protocol_rediscovery_required');
+  assert.equal(operations.find(operation=>operation.path==='/api/old')?.enabled,false);
+  const current=operations.find(operation=>operation.path==='/api/cart'&&operation.method==='GET')!;
+  assert.equal(value(await f.execute('pap_request',{operationRef:current.operationRef})).status,200);
+});
+
+// The Host owns selection and the client only adopts it on a fresh explicit connection.
+test('domain reconnect adopts a changed default epoch without letting old requests silently change authority', async t => {
+  const f = await fixture(t, { autoConnect: true });
+  value(await f.execute('pap_connect', { domain: 'shop.example' }));
+  const operations = value(await f.execute('pap_operations')) as unknown as Value[];
+  const read = operations.find(operation => operation.method === 'GET')!; assert(read);
+  value(await f.execute('pap_request', { operationRef: read.operationRef }));
+  f.changeDefaultEpoch();
+  const before = f.transport.calls.length;
+  const stale = await f.execute('pap_request', { operationRef: read.operationRef });
+  assert.equal(stale.ok, false);
+  if (!stale.ok) assert.equal(stale.error.businessRequest, 'not_sent');
+  assert.equal(f.transport.calls.length, before);
+  value(await f.execute('pap_connect', { domain: 'shop.example' }));
+  const refreshed = value(await f.execute('pap_operations')) as unknown as Value[];
+  value(await f.execute('pap_request', { operationRef: refreshed.find(operation => operation.method === 'GET')!.operationRef }));
 });

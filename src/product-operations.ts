@@ -5,7 +5,7 @@ import type { Company, HttpResponse, Operation, PapState, ProductOperationApprov
 import type { PapOperationRequest } from './product-api.js';
 
 export function operationRef(company: Company, route: Route): string {
-  return `op_${sha256(JSON.stringify([company.ref, route.method, route.template, route.resource, route.parameters ?? [], route.channel]))}`;
+  return `op_${sha256(JSON.stringify([company.ref, route.method, route.template, route.resource, route.parameters ?? [], route.channel, ...(route.requiresConsent ? [true] : [])]))}`;
 }
 function supported(company: Company, route: Route): boolean {
   const reserved = [...company.sources.map(x => x.url), company.metadata?.token_endpoint, company.metadata?.authorization_endpoint, company.metadata?.revocation_endpoint].filter((value): value is string => Boolean(value));
@@ -19,14 +19,21 @@ export function findOperation(state: PapState, reference: string): { company: Co
 }
 export function publicOperations(state: PapState, enabledOnly = false): object[] {
   const entries: object[] = [];
+  let schemaBytes=0;
   for (const company of Object.values(state.companies)) for (const route of company.routes) {
     if (!supported(company, route)) continue;
     const reference = operationRef(company, route); const approval = state.product?.operations[reference];
     if (enabledOnly && !approval) continue;
+    const bytes=route.bodySchema===undefined?0:Buffer.byteLength(JSON.stringify(route.bodySchema));
+    const includeSchema=route.bodySchema!==undefined&&bytes<=32768&&schemaBytes+bytes<=262144;
+    if(includeSchema)schemaBytes+=bytes;
     entries.push({ operationRef: reference, companyRef: company.ref, method: route.method, path: new URL(route.template).pathname.replace(/%7b/gi, '{').replace(/%7d/gi, '}'),
+      ...(route.operationId?{operationId:route.operationId}:{}),...(includeSchema?{bodySchema:route.bodySchema}:route.bodySchemaUnavailable||route.bodySchema!==undefined?{bodySchemaUnavailable:true}:{}),
       pathParameters: [...route.template.matchAll(/\{([A-Za-z0-9_.-]+)\}/g)].map(x => x[1]),
       queryParameters: (route.parameters ?? []).filter(x => x.in === 'query').map(x => ({ name: x.name, required: x.required })),
-      enabled: Boolean(approval), account: approval ? Boolean(state.sessions[approval.sessionRef]?.accountSlot) : false });
+      enabled: Boolean(approval), account: approval ? Boolean(state.sessions[approval.sessionRef]?.accountSlot) : false,
+      requiresApproval: !['GET','HEAD'].includes(route.method) || Boolean(route.requiresConsent),
+      blocked: state.product?.disabled?.includes(reference) ?? false });
   }
   return entries;
 }
@@ -41,6 +48,10 @@ export function assertApproval(state: PapState, reference: string, expected: Pro
 export function prepareOperation(state: PapState, input: PapOperationRequest): { operation: Operation; approval: ProductOperationApproval } {
   const approval = state.product?.operations[input.operationRef]; requirePap(approval, 'permission_denied');
   assertApproval(state, input.operationRef, approval);
+  return prepareDiscoveredOperation(state, input, approval);
+}
+/** Exact transient approval from the Host consent path; never persists a route permission. */
+export function prepareDiscoveredOperation(state: PapState, input: PapOperationRequest, approval: ProductOperationApproval): { operation: Operation; approval: ProductOperationApproval } {
   const { route } = findOperation(state, input.operationRef);
   const pathNames = [...route.template.matchAll(/\{([A-Za-z0-9_.-]+)\}/g)].map(x => x[1]!);
   const path = input.path ?? {}; const query = input.query ?? {};

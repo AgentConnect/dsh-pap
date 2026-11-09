@@ -1,7 +1,7 @@
 import { Service, type Context } from '@deepseek-ai/cordis';
 import { isAbsolute, join, resolve } from 'node:path';
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
-import type { Binding, HttpTransport, IdentityRef } from './types.js';
+import type { Binding, HttpTransport, IdentityRef, PapState, ProductOperationApproval, Operation } from './types.js';
 import type { CallbackHandoff, HostSecretStore } from './host.js';
 import { PapClient } from './client.js';
 import { ProtocolIdentityHost, type ProtocolIdentityClient } from './protocol-adapter.js';
@@ -10,15 +10,21 @@ import { PapError, requirePap, type PapAuthHint } from './errors.js';
 import { KeyringSecretStore } from './keyring.js';
 import { FileSecretStore, syncDirectory } from './file-secrets.js';
 import { DeviceCallbackHandoff } from './callback-handoff.js';
-import { PAP_CONSUMER, PAP_MANAGER, PAP_TOOLS, identityReferenceSchema, managementRequestSchema, operationRequestSchema, type PapHostConsumer, type PapManagementRequest, type ProductResult } from './product-api.js';
-import { assertApproval, findOperation, prepareOperation, privateValues, publicOperations, publicResponse, sanitizePublicValue } from './product-operations.js';
+import { PAP_CONSUMER, PAP_MANAGER, PAP_TOOLS, identityReferenceSchema, managementRequestSchema, operationRequestSchema, type PapHostConsumer, type PapManagementRequest, type ProductResult, type PapRequestTrace } from './product-api.js';
+import { assertApproval, findOperation, prepareOperation, prepareDiscoveredOperation, privateValues, publicOperations, publicResponse, sanitizePublicValue } from './product-operations.js';
 import { httpsUrl, id, sha256 } from './util.js';
 import { strictJson } from './strict-json.js';
 import { CredentialHistory } from './credential-history.js';
+import { PapConsentPending, waitForConsent, type DomainOperationConsumer, type ConsentDecision } from './domain-consent.js';
+import { PapPolicyTargets, classifyRoute, type PolicyHost, type PolicyAdmission } from './protocol-policy.js';
 
 export interface PapPluginConfig {
   /** Explicit opt-in; loading an unconfigured bundle performs no discovery or signing. */
   enabled?: boolean;
+  /** Host-approved domain mode; connects signed-out read operations without per-domain settings. */
+  autoConnect?: boolean;
+  approvalWaitMs?: number;
+  approvalPollMs?: number;
   stateRoot?: string;
   keyringService?: string;
   /** Explicit local storage selection; no automatic fallback between backends. */
@@ -41,9 +47,10 @@ const fiberOf = (fiber: object | undefined) => (fiber as { ctx?: Context } | und
 export async function publicResult(operation: () => Promise<unknown>): Promise<ProductResult> {
   try { return { ok: true, value: await operation() }; }
   catch (error) {
-    if (error instanceof PapError) return { ok: false, error: { code: error.code, ...(error.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: error.retryAfterSeconds }) } };
+    if (error instanceof PapError) return { ok: false, error: { code: error.code, ...(error.retryAfterSeconds === undefined ? {} : { retryAfterSeconds: error.retryAfterSeconds }), ...(error instanceof PapConsentPending ? {approval:{requestId:error.requestId,presentation:'dialog' as const,status:'pending' as const}} : {}) } };
     const code = (error as { code?: unknown } | null)?.code;
-    if (typeof code === 'string' && ['callback_not_ready','callback_claimed','callback_expired','callback_conflict','callback_unavailable','callback_limit','management_auth_required','not_published','client_id_conflict','idempotency_conflict','provider_unavailable','provider_disposed','consumer_forbidden'].includes(code)) return { ok: false, error: { code } };
+    if(typeof code==='string' && ['protocol_policy_unavailable','protocol_policy_changed','protocol_policy_target_revoked','protocol_policy_invalid_target','protocol_policy_invalid_operation'].includes(code))return {ok:false,error:{code}};
+    if (typeof code === 'string' && ['domain_access_disabled','domain_access_expired','published_identity_required','default_identity_required','default_identity_changed','scope_authorization_required','request_previously_denied','once_authorization_required','grant_inactive','grant_conflict','operation_mismatch','operation_result_unknown','callback_not_ready','callback_claimed','callback_expired','callback_conflict','callback_unavailable','callback_limit','management_auth_required','not_published','client_id_conflict','idempotency_conflict','provider_unavailable','provider_disposed','consumer_forbidden'].includes(code)) return { ok: false, error: { code } };
     return { ok: false, error: { code: 'permission_denied' } };
   }
 }
@@ -61,8 +68,20 @@ export class PapService extends Service {
   private readonly authHints = new Map<string, PapAuthHint>();
   private readonly credentialHistory = new CredentialHistory();
   private changing = false;
-  constructor(ctx: Context, private readonly config: PapPluginConfig = {}) {
+  private domainFlight: Promise<unknown> = Promise.resolve();
+  private readonly consentController = new AbortController();
+  private readonly pendingConsents = new Map<string, ConsentDecision>();
+  /** Bound once to this installed plugin; pending requests retain their owning facade across retries. */
+  private operationConsumer?: DomainOperationConsumer;
+  private policyTargets?: PapPolicyTargets;
+  private readonly approvalWaitMs: number;
+  private readonly approvalPollMs: number;
+  constructor(ctx: Context, private config: PapPluginConfig = {}) {
     super(ctx, 'pap');
+    this.approvalWaitMs = config.approvalWaitMs ?? 120000;
+    this.approvalPollMs = config.approvalPollMs ?? 1000;
+    requirePap(Number.isSafeInteger(this.approvalWaitMs) && this.approvalWaitMs >= 0 && this.approvalWaitMs <= 600000
+      && Number.isSafeInteger(this.approvalPollMs) && this.approvalPollMs >= 10 && this.approvalPollMs <= 10000, 'not_configured');
     // Cordis service access can associate this.ctx with a caller. C must always
     // receive the original installed F Context, never the manager/tool caller.
     this.installedContext = ctx;
@@ -87,6 +106,7 @@ export class PapService extends Service {
   }
   private async restore(): Promise<void> {
     if (this.config.enabled !== true) return;
+    if (this.config.autoConnect) return;
     if (typeof this.config.stateRoot !== 'string' || !isAbsolute(this.config.stateRoot) || !this.config.policyRef) { this.lastError = 'not_configured'; return; }
     try {
       let reference = this.config.identityRef;
@@ -173,7 +193,7 @@ export class PapService extends Service {
   }
   private async runPublic(operation: () => Promise<unknown>): Promise<ProductResult> {
     const result = await publicResult(operation);
-    if (this.stopped) return {ok:false,error:{code:'disconnected'}};
+    if (this.stopped) return {ok:false,error:{code:!result.ok && ['request_uncertain','operation_result_unknown'].includes(result.error.code) ? result.error.code : 'disconnected'}};
     try { return sanitizePublicValue(result,this.credentialHistory.values()) as ProductResult; }
     catch { return {ok:false,error:{code:'credential_unavailable'}}; }
   }
@@ -189,13 +209,44 @@ export class PapService extends Service {
     return sanitized;
   }
   private assertCurrentEngine(engine: PapClient): void { requirePap(!this.stopped, 'disconnected'); requirePap(!this.changing && this.client === engine, 'state_conflict'); }
+  private protocolPolicy(): PapPolicyTargets {
+    if (!this.policyTargets) {
+      const host=this.installedContext.get('anpIdentity') as Partial<PolicyHost>;
+      requirePap(typeof host.bindProtocolPolicy==='function','protocol_policy_required');
+      this.policyTargets=new PapPolicyTargets(host.bindProtocolPolicy(this.installedContext,'pap'));
+    }
+    return this.policyTargets;
+  }
+  private async policyAdmission(state:PapState,reference:string,url?:string):Promise<PolicyAdmission> {
+    const {company,route}=findOperation(state,reference), targets=this.protocolPolicy();
+    const classification=classifyRoute(targets.policy,route);
+    if(state.product?.operations[reference]?.scopes.length)classification.extraPermissions=true;
+    return targets.policy.evaluate(targets.target(company),{url:url??route.template,...classification});
+  }
   private async catalog(enabledOnly: boolean, check: () => void): Promise<object[]> {
     check(); const engine = await this.engine(); const state = await engine.store.read();
     check(); this.assertCurrentEngine(engine); await (await this.consumer()).assertActive(); check(); this.assertCurrentEngine(engine);
-    return this.publicValue(state,publicOperations(state, enabledOnly)) as object[];
+    if(!this.config.autoConnect)return this.publicValue(state,publicOperations(state, enabledOnly)) as object[];
+    const operations=[];
+    for(const raw of publicOperations(state)) {
+      const entry=raw as {operationRef:string;blocked:boolean};
+      const {company}=findOperation(state,entry.operationRef);
+      if(!company.discoveryOrigin){
+        // An unrelated legacy cache cannot make a newly discovered domain's connection fail.
+        if(!enabledOnly)operations.push({...entry,enabled:false,requiresApproval:false,permission:'rediscovery-required',unavailableReason:'protocol_rediscovery_required'});
+        continue;
+      }
+      const admission=await this.policyAdmission(state,entry.operationRef);
+      const {route}=findOperation(state,entry.operationRef);
+      const effect=classifyRoute(this.protocolPolicy().policy,route).effect;
+      const blocked=entry.blocked||admission.decision==='deny';
+      if(!enabledOnly||!blocked&&admission.decision==='allow')operations.push({...entry,effect,blocked,enabled:!blocked&&admission.decision==='allow',requiresApproval:admission.decision==='ask',permission:admission.decision});
+      check();this.assertCurrentEngine(engine);
+    }
+    return this.publicValue(state,operations) as object[];
   }
   async start(): Promise<void> { await this.ready; }
-  stop(): void { if (this.stopped) return; this.stopped = true; this.client?.close(); this.hostConsumer?.dispose(); this.credentialHistory.dispose(); }
+  stop(): void { if (this.stopped) return; this.stopped = true; this.consentController.abort(); this.policyTargets?.dispose(); this.client?.close(); this.hostConsumer?.dispose(); this.credentialHistory.dispose(); }
   async getStatus(includeManagementHints = false): Promise<object> {
     await this.ready;
     requirePap(!this.stopped, 'disconnected');
@@ -237,28 +288,67 @@ export class PapService extends Service {
     });
   }
   /** Agent capability contains only approved local operation references. */
-  acquireTools(context: Context): { status(): Promise<ProductResult>; operations(): Promise<ProductResult>; request(input: unknown, signal?: AbortSignal): Promise<ProductResult> } {
+  acquireTools(context: Context): { requestTimeoutMs: number; connect(domain: string): Promise<ProductResult>; status(): Promise<ProductResult>; operations(): Promise<ProductResult>; request(input: unknown, signal?: AbortSignal): Promise<ProductResult> } {
     this.assertInstalled(context, PAP_TOOLS); const check = () => this.assertInstalled(context, PAP_TOOLS);
     return Object.freeze({
+      requestTimeoutMs: this.approvalWaitMs + 30000,
+      connect: domain => this.runPublic(() => {
+        const run = this.domainFlight.then(() => this.connectDomain(domain, check));
+        this.domainFlight = run.catch(() => undefined);
+        return run;
+      }),
       status: () => this.runPublic(async () => { check(); const result = await this.getStatus(); check(); return result; }),
-      operations: () => this.runPublic(() => this.catalog(true, check)),
-      request: (input, signal) => this.runPublic(async () => {
+      operations: () => this.runPublic(() => this.catalog(!this.config.autoConnect, check)),
+      request: async (input, signal) => {
+        const trace: PapRequestTrace = {phase:'prepare',businessRequest:'not_sent'};
+        const result = await this.runPublic(async () => {
         check(); const parsed = operationRequestSchema.safeParse(input); requirePap(parsed.success, 'permission_denied');
         const engine = await this.engine(); const pin = this.credentialHistory.begin();
         try {
-        const snapshot = await engine.store.read(); requirePap(snapshot.credentialVault?.completeness==='complete','credential_history_incomplete'); const prepared = prepareOperation(snapshot, parsed.data);
+        const snapshot = await engine.store.read(); requirePap(snapshot.credentialVault?.completeness==='complete','credential_history_incomplete');
+        const { route } = findOperation(snapshot, parsed.data.operationRef);
+        const domain=this.config.autoConnect===true;
+        const prepared = domain ? this.prepareDomainOperation(snapshot, parsed.data) : prepareOperation(snapshot, parsed.data);
+        const admission=domain?await this.policyAdmission(snapshot,parsed.data.operationRef,prepared.operation.url):undefined;
+        const effect=domain?classifyRoute(this.protocolPolicy().policy,route).effect:undefined;
+        requirePap(admission?.decision!=='deny','protocol_permission_denied');
+        const needsConsent=admission?.decision==='ask';
+        const assertOperation = domain ? this.domainOperationFence(snapshot, parsed.data.operationRef, prepared.approval) : (state: PapState) => assertApproval(state, parsed.data.operationRef, prepared.approval);
         this.credentialHistory.restore(snapshot);
         for (const grant of Object.values(snapshot.grants)) { this.credentialHistory.rememberIfAbsent(grant.accessToken); if (grant.refreshToken) this.credentialHistory.rememberIfAbsent(grant.refreshToken); }
         const checkRequest = () => { check(); this.assertCurrentEngine(engine); };
+        const assertPolicy=async()=>{
+          if(!admission)return;
+          checkRequest();await admission.assertActive();
+          const host=this.installedContext.get('anpIdentity') as {resolveDomainAccess(context:Context,profile:'pap_session'):Promise<{identityRef:IdentityRef;policyRef:string}>};
+          const binding=await host.resolveDomainAccess(this.installedContext,'pap_session');
+          requirePap(JSON.stringify(binding.identityRef)===JSON.stringify(this.selected)&&binding.policyRef===this.config.policyRef,'permission_denied');
+          await this.protocolPolicy().policy.assertNoDenial(new Request(prepared.operation.url,{method:prepared.operation.method,headers:prepared.operation.headers,body:prepared.operation.body,redirect:'manual',credentials:'omit'}));
+          await admission.assertActive();checkRequest();
+        };
+        await assertPolicy();
         checkRequest(); this.credentialHistory.assertUsable();
         const sentSecrets = new Set(privateValues(snapshot));
         try {
-          const response = await engine.dispatchPap(prepared.approval.sessionRef, prepared.operation, { signal,
-            assertAllowed: state => { checkRequest(); this.credentialHistory.assertUsable(); assertApproval(state, parsed.data.operationRef, prepared.approval); },
+          const dispatch = (assertConsent?: () => Promise<void>) => {
+            trace.phase='identity';
+            return engine.dispatchPap(prepared.approval.sessionRef, prepared.operation, { signal,
+            observeBusiness: (event,status) => {
+              trace.phase=event==='attempted'?'request':'response';
+              trace.businessRequest=event==='attempted'?'unknown':'response_received';
+              if(event==='attempted')delete trace.httpStatus;
+              else if(status!==undefined)trace.httpStatus=status;
+            },
+            assertAllowed: state => { checkRequest(); this.credentialHistory.assertUsable(); assertOperation(state); },
+            ...((admission||assertConsent)?{assertConsent:async()=>{await assertPolicy();await assertConsent?.();},singleOperation:needsConsent||!['GET','HEAD'].includes(route.method)||effect!=='read'}:{}),
             captureSecrets: (values, credentials) => { for (const value of values) sentSecrets.add(value); if (credentials) this.credentialHistory.observe(credentials); this.credentialHistory.assertUsable(); },
           });
+          };
+          if(needsConsent)trace.phase='approval';
+          const response = needsConsent ? await this.withDomainConsent(prepared.operation, signal, checkRequest, dispatch,admission!.version) : await dispatch();
+          await assertPolicy();
           checkRequest(); await (await this.consumer()).assertActive(); checkRequest();
-          const current = await engine.store.read(); assertApproval(current, parsed.data.operationRef, prepared.approval);
+          const current = await engine.store.read(); assertOperation(current);
           this.credentialHistory.restore(current);
           const secrets = [...sentSecrets, ...privateValues(current), ...this.credentialHistory.values()];
           checkRequest(); await (await this.consumer()).assertActive(); checkRequest();
@@ -271,8 +361,132 @@ export class PapService extends Service {
           throw error;
         }
         } finally { this.credentialHistory.end(pin); }
-      }),
+        });
+        return result.ok ? result : {...result,error:{...result.error,...trace}};
+      },
     });
+  }
+  private prepareDomainOperation(state: PapState, input: import('./product-api.js').PapOperationRequest) {
+    requirePap(!state.product?.disabled?.includes(input.operationRef), 'permission_denied');
+    const { company, route } = findOperation(state, input.operationRef);
+    const existing = state.product?.operations[input.operationRef];
+    if (existing) assertApproval(state, input.operationRef, existing);
+    const session = existing ? state.sessions[existing.sessionRef] : Object.values(state.sessions).find(value => value.connected && !value.accountSlot
+      && state.subjects[value.subjectRef]?.companyRef === company.ref);
+    requirePap(session?.connected, 'disconnected');
+    const approval: ProductOperationApproval = existing ?? {companyRef:company.ref, method:route.method, template:route.template,
+      resource:route.resource, sessionRef:session.ref, scopes:[], generation:state.generation};
+    return prepareDiscoveredOperation(state, input, approval);
+  }
+  private domainOperationFence(snapshot: PapState, reference: string, approval: ProductOperationApproval): (state: PapState) => void {
+    const original = findOperation(snapshot, reference);
+    const permission = JSON.stringify(snapshot.product?.operations[reference] ?? null);
+    const generation = snapshot.sessions[approval.sessionRef]!.generation;
+    return state => {
+      requirePap(!state.product?.disabled?.includes(reference), 'permission_denied');
+      requirePap(JSON.stringify(state.product?.operations[reference] ?? null) === permission, 'state_conflict');
+      const { company, route } = findOperation(state, reference);
+      requirePap(company.metadataDigest === original.company.metadataDigest && route.method === approval.method && route.template === approval.template && route.resource === approval.resource, 'state_conflict');
+      const session = state.sessions[approval.sessionRef];
+      requirePap(session?.connected && session.generation === generation && state.subjects[session.subjectRef]?.companyRef === company.ref, 'disconnected');
+    };
+  }
+  private async withDomainConsent<T>(operation: Operation, inputSignal: AbortSignal | undefined, check: () => void, effect: (assertActive: () => Promise<void>) => Promise<T>,policyVersion:number): Promise<T> {
+    const identity = this.installedContext.get('anpIdentity') as {
+      bindDomainOperationConsumer(context: Context): DomainOperationConsumer;
+      resolveDomainAccess(context: Context, profile: 'pap_session'): Promise<{identityRef:IdentityRef;policyRef:string}>;
+    };
+    requirePap(typeof identity.bindDomainOperationConsumer === 'function', 'not_configured');
+    const signal = AbortSignal.any([this.consentController.signal, ...(inputSignal ? [inputSignal] : [])]);
+    const assertBinding = async () => {
+      check(); requirePap(!signal.aborted, 'disconnected');
+      const current = await identity.resolveDomainAccess(this.installedContext, 'pap_session');
+      check(); requirePap(!signal.aborted && JSON.stringify(current.identityRef) === JSON.stringify(this.selected) && current.policyRef === this.config.policyRef, 'permission_denied');
+    };
+    await assertBinding();
+    const consumer = this.operationConsumer ??= identity.bindDomainOperationConsumer(this.installedContext);
+    const request = new Request(operation.url, {method:operation.method, headers:operation.headers, body:operation.body, signal, redirect:'manual', credentials:'omit'});
+    const key = sha256(JSON.stringify([this.selected,this.config.policyRef,policyVersion,request.method,request.url,[...request.headers],operation.body ?? null]));
+    const old = this.pendingConsents.get(key);
+    let decision = old ? await consumer.status(old.id) : await consumer.request({requestId:id('pap-consent'),purpose:`PAP exact operation ${request.method} ${new URL(request.url).origin}; policy ${policyVersion}`,request:request.clone()});
+    if (decision.status === 'pending') {
+      this.pendingConsents.set(key, decision);
+      try { decision = await waitForConsent(consumer,decision,signal,this.approvalWaitMs,this.approvalPollMs); }
+      catch (error) {
+        this.pendingConsents.delete(key);
+        await consumer.cancel(decision.id,decision.version).catch(() => undefined);
+        throw error;
+      }
+    }
+    check(); requirePap(!signal.aborted, 'disconnected');
+    if (decision.status !== 'pending') this.pendingConsents.delete(key);
+    if (['denied','cancelled'].includes(decision.status)) throw new PapError('identity_authorization_denied');
+    if (decision.status === 'expired') throw new PapError('identity_authorization_expired');
+    if (decision.status === 'pending') throw new PapConsentPending(decision.id);
+    requirePap(decision.status === 'approved' && decision.grantId, 'permission_denied');
+    requirePap(decision.mode === 'once', 'permission_denied');
+    return consumer.execute(decision.grantId,request,async assertActive => {
+      const active = async () => { await assertBinding(); await assertActive(); check(); requirePap(!signal.aborted,'disconnected'); };
+      await active(); const result = await effect(active); await active(); return result;
+    });
+  }
+  private async connectDomain(domain: string, check: () => void): Promise<unknown> {
+    await this.ready; check();
+    requirePap(this.config.enabled === true && this.config.autoConnect === true, 'not_configured');
+    requirePap(typeof domain === 'string' && domain.length > 0 && domain.length <= 253 && !/[/?#@\\\s]/.test(domain), 'unsafe_destination');
+    const identity = this.installedContext.get('anpIdentity') as {
+      resolveDomainAccess(context: Context, profile: 'pap_session'): Promise<{ identityRef: IdentityRef; policyRef: string; stateRoot: string; secretsRoot: string; secretStore: 'keyring' | 'local-file' }>;
+    };
+    requirePap(typeof identity.resolveDomainAccess === 'function', 'not_configured');
+    const binding = await identity.resolveDomainAccess(this.installedContext, 'pap_session'); check();
+    if (this.selected && (JSON.stringify(this.selected) !== JSON.stringify(binding.identityRef) || this.config.policyRef !== binding.policyRef)) {
+      // A fresh explicit domain connect adopts the Host default. Old requests keep
+      // their engine fence; no stored identities, sessions or credentials are erased.
+      this.client?.close(); this.client = undefined;
+      this.hostConsumer?.dispose(); this.hostConsumer = undefined;
+      this.policyTargets?.dispose(); this.policyTargets = undefined;
+      this.authHints.clear();
+      for (const consent of this.pendingConsents.values()) {
+        try { await this.operationConsumer?.cancel(consent.id, consent.version); }
+        catch { /* A concurrent owner decision is authoritative; do not reuse it. */ }
+      }
+      this.pendingConsents.clear(); check();
+    }
+    if (!this.client) {
+      // Local paths and policy references come exclusively from the identity Host.
+      this.config = { ...this.config, identityRef: binding.identityRef, policyRef: binding.policyRef,
+        stateRoot: binding.stateRoot, secretStore: binding.secretStore, secretsRoot: binding.secretsRoot };
+      await this.select(binding.identityRef, false); check();
+    }
+    const engine = await this.engine();
+    const company = await engine.resolvePapCompany(domain); check(); this.assertCurrentEngine(engine);
+    const subject = await engine.getOrCreatePapUser(company.companyRef, 'regular', true); check();
+    const snapshot = await engine.store.read(); check();
+    this.protocolPolicy().target(snapshot.companies[company.companyRef]!);
+    const previous = Object.values(snapshot.sessions).filter(session => session.subjectRef === subject.subjectRef && !session.accountSlot);
+    // A disconnected session is an owner fence, not a connection failure to repair automatically.
+    requirePap(!previous.length || previous.some(session => session.connected), 'disconnected');
+    const session = previous.find(value => value.connected) ?? await engine.openPapSession(subject.subjectRef);
+    check(); this.assertCurrentEngine(engine); await (await this.consumer()).assertActive(); check();
+    const sessionRef = 'sessionRef' in session ? session.sessionRef : session.ref;
+    await engine.store.transaction(state => {
+      check(); this.assertCurrentEngine(engine);
+      const storedSession = state.sessions[sessionRef]; requirePap(storedSession?.connected, 'disconnected');
+      if (storedSession.autoReadConfigured) return; // Preserve explicit operation disables on repeated discovery.
+      storedSession.autoReadConfigured = true;
+      const current = state.companies[company.companyRef]; requirePap(current, 'discovery_failed');
+      for (const raw of publicOperations(state)) {
+        const operation = raw as { companyRef: string; operationRef: string; method: string };
+        if (operation.companyRef !== company.companyRef || !['GET', 'HEAD'].includes(operation.method)) continue;
+        const { route } = findOperation(state, operation.operationRef);
+        if (route.requiresConsent) continue;
+        state.product ??= { operations: {} };
+        state.product.operations[operation.operationRef] = { companyRef: current.ref, method: route.method, template: route.template,
+          resource: route.resource, sessionRef, scopes: [], generation: state.generation + 1 };
+      }
+    });
+    check(); this.assertCurrentEngine(engine);
+    return this.publicValue(await engine.store.read(), { company, operations: (await this.catalog(true, check) as { companyRef: string; effect: string }[]).filter(operation => operation.companyRef === company.companyRef && operation.effect==='read') });
   }
   private async manage(input: PapManagementRequest, check: () => void): Promise<unknown> {
     await this.ready; check();
@@ -285,13 +499,13 @@ export class PapService extends Service {
       return { ...subject, ...(await engine.openPapSession(subject.subjectRef, input.accountSlot)) };
     }
     if (input.action === 'session/disconnect') { await engine.disconnectPap(input.sessionRef); return null; }
-    if (input.action === 'operation/disable') { await engine.store.transaction(state => { check(); if (state.product) delete state.product.operations[input.operationRef]; }); return null; }
+    if (input.action === 'operation/disable') { await engine.store.transaction(state => { check(); state.product ??= {operations:{}}; delete state.product.operations[input.operationRef]; state.product.disabled = [...new Set([...(state.product.disabled ?? []), input.operationRef])]; }); return null; }
     if (input.action === 'operation/enable') return engine.store.transaction(state => {
       check(); const { company, route } = findOperation(state, input.operationRef); const session = state.sessions[input.sessionRef];
       requirePap(session?.connected && state.subjects[session.subjectRef]?.companyRef === company.ref, 'permission_denied');
       const scopes = [...new Set(input.scopes ?? [])].sort();
       requirePap(scopes.every(scope => company.scopes.includes(scope)) && (session.accountSlot || scopes.length === 0), 'insufficient_scope');
-      state.product ??= { operations: {} }; state.product.operations[input.operationRef] = { companyRef: company.ref, method: route.method, template: route.template, resource: route.resource, sessionRef: input.sessionRef, scopes, generation: state.generation + 1 };
+      state.product ??= { operations: {} }; state.product.disabled = state.product.disabled?.filter(reference => reference !== input.operationRef); state.product.operations[input.operationRef] = { companyRef: company.ref, method: route.method, template: route.template, resource: route.resource, sessionRef: input.sessionRef, scopes, generation: state.generation + 1 };
       return { operationRef: input.operationRef, enabled: true };
     });
     if (input.action === 'account/sign-in') {

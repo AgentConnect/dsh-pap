@@ -8,6 +8,13 @@ export interface Route {
   method: string; template: string; resource: string;
   channel?: 'openapi' | 'mcp' | 'poppy';
   parameters?: { name: string; in: 'path' | 'query'; required: boolean }[];
+  /** Advertised extra requirements never become global read permission. */
+  requiresConsent?: boolean;
+  /** Raw non-secret semantic declarations from the validated discovery document. */
+  policyEvidence?: {hasRequestBody:boolean;security?:unknown;declaredEffect?:unknown;annotations?:unknown};
+  operationId?: string;
+  bodySchema?: unknown;
+  bodySchemaUnavailable?: boolean;
 }
 export interface ProductOperationApproval { companyRef: string; method: string; template: string; resource: string; sessionRef: string; scopes: string[]; generation: number }
 export interface AsMetadata {
@@ -17,13 +24,15 @@ export interface AsMetadata {
   code_challenge_methods_supported?: string[];
 }
 export interface Company {
+  /** Initial HTTPS discovery origin, pinned through validated redirects; never inferred from a hostname suffix. */
+  discoveryOrigin?: string;
   ref: string; domain: string; name: string; companyId: string; issuer?: string; authDisabled: boolean;
   authMode: 'no_as' | 'account' | 'disabled'; metadata?: AsMetadata;
   routes: Route[]; scopes: string[]; metadataDigest: string; expiresAt: number; generation: number;
   sources: { url: string; digest: string }[];
 }
 export interface Subject { ref: string; companyRef: string; companyId: string; binding: Binding; mode: 'regular' | 'anonymous'; userId: string; agentId?: string }
-export interface Session { ref: string; subjectRef: string; sid: string; accountSlot?: string; generation: number; connected: boolean }
+export interface Session { ref: string; subjectRef: string; sid: string; accountSlot?: string; generation: number; connected: boolean; autoReadConfigured?: boolean }
 export interface Delegation { subjectRef: string; key: KeyRef; compact: string; expiresAt: number; generation: number }
 export interface Grant {
   ref: string; subjectRef: string; accountSlot: string; issuer: string; clientId: string; resource: string; scope: string[];
@@ -47,7 +56,7 @@ export interface PapState {
   delegationAttempts: Record<string, { sequence: number; status: 'reserved' | 'issued' | 'failed' }>;
   retirements: Record<string, { subjectRef: string; key: KeyRef }>;
   /** User-managed operation permissions; protected by the same encrypted store and lock. */
-  product?: { operations: Record<string, ProductOperationApproval> };
+  product?: { operations: Record<string, ProductOperationApproval>; disabled?: string[] };
   /** Private response-redaction tombstones, stored only inside the AES-GCM state. Never a grant. */
   credentialVault?: { version: 1; completeness: 'complete'|'legacy_incomplete'; entries: Record<string, string>; blocked: boolean };
 }
