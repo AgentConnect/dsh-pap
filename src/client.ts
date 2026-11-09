@@ -22,6 +22,10 @@ interface AccountRequestControl { purpose?: 'token'|'revoke'; scopes: readonly s
 export interface PapDispatchControl {
   signal?: AbortSignal;
   assertAllowed?: (state: PapState) => void;
+  /** Revalidate the consumed exact-operation permit immediately before physical dispatch. */
+  assertConsent?: () => Promise<void>;
+  /** A single owner decision never authorizes an automatic second business send. */
+  singleOperation?: boolean;
   /** Host-only in-memory response redaction set; never register this callback on a wire surface. */
   captureSecrets?: (values: readonly string[], credentials?: CredentialObservation) => void;
 }
@@ -279,6 +283,7 @@ export class PapClient {
         // Same lock orders local disconnect/signout versus actual dispatch. No await between final CAS and HTTP start.
         response = await this.store.transaction(async current => {
           try { await lease.assertActive(); await dpopLease?.assertActive(); } catch { throw new PapError('permission_denied'); }
+          await control.assertConsent?.();
           allowed(current); requirePap(!controller.signal.aborted, 'disconnected');
           const currentSession = this.session(current, sessionRef);
           requirePap(this.company(current, subject.companyRef).generation === company.generation && currentSession.generation === session.generation && current.delegations[subject.ref]?.generation === delegation.generation, 'state_conflict');
@@ -295,7 +300,9 @@ export class PapClient {
       const failure = protocolFailure(response, company, route.resource, grant?.tokenType); const error = failure.code;
       if (error === 'session_ended') {
         if (retriedSession) throw new PapError('session_ended'); retriedSession = true;
-        await this.store.transaction(current => { const value = this.session(current, sessionRef); requirePap(value.generation === session.generation, 'state_conflict'); value.sid = id('ses'); value.generation++; }); continue;
+        await this.store.transaction(current => { const value = this.session(current, sessionRef); requirePap(value.generation === session.generation, 'state_conflict'); value.sid = id('ses'); value.generation++; });
+        if (control.singleOperation) throw new PapError('session_ended');
+        continue;
       }
       if (error === 'invalid_session') throw new PapError('invalid_session');
       if (grant && error === 'use_dpop_nonce' && responseHeader(response, 'dpop-nonce') && !retriedNonce) {

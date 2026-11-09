@@ -1,6 +1,6 @@
 {
   "name": "@awiki/dsh-pap",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Local-custody PAP 0.3 client for DeepSeek Harness",
   "type": "module",
   "license": "Apache-2.0",
@@ -63,7 +63,8 @@
     "@deepseek-ai/dsh-client-ui-layout": "0.2.2-rc.1",
     "@deepseek-ai/dsh-client-ui-settings": "0.2.2-rc.1",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.2-rc.1",
-    "react": "18.3.1"
+    "react": "18.3.1",
+    "@agent-network-protocol/dsh-anp-identity": ">=0.1.14"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.1.0",
@@ -139,6 +140,9 @@
       "optional": true
     },
     "react": {
+      "optional": true
+    },
+    "@agent-network-protocol/dsh-anp-identity": {
       "optional": true
     }
   },

@@ -1,4 +1,5 @@
 export type PapErrorCode =
+  | 'identity_authorization_required' | 'identity_authorization_denied' | 'identity_authorization_expired'
   | 'discovery_failed' | 'unsupported_profile' | 'unsafe_destination' | 'namespace_changed'
   | 'permission_denied' | 'state_conflict' | 'state_corrupt' | 'credential_unavailable'
   | 'delegation_blocked' | 'invalid_session' | 'session_ended' | 'invalid_token'

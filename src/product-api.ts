@@ -36,4 +36,4 @@ export const operationRequestSchema = z.object({
   body: z.json().optional(),
 }).strict();
 export type PapOperationRequest = z.infer<typeof operationRequestSchema>;
-export type ProductResult = { ok: true; value: unknown } | { ok: false; error: { code: string; retryAfterSeconds?: number | string } };
+export type ProductResult = { ok: true; value: unknown } | { ok: false; error: { code: string; retryAfterSeconds?: number | string; approval?: { requestId: string; presentation: 'dialog'; status: 'pending' } } };

@@ -1,5 +1,7 @@
 # DSH PAP：DeepSeek Harness 的 PAP 0.3 客户端
 
+域名自动接入和单次操作确认需要同一 Host 中的 `@agent-network-protocol/dsh-anp-identity >=0.1.14`。该 peer 对纯库用途是可选依赖，但域名插件必须具备新版 Host 授权接口。本版仅提供“已发现只读自动访问、写操作由用户批准一次”的模式，不包含全量写权限或聊天切换全局写模式的设置。
+
 [English](README.md) | 简体中文
 
 本项目让 DSH 中的 Personal Agent 使用**一套可复用的本地身份**连接外部 PAP Company。用户创建并发布身份、授权插件和业务操作后，Agent 无需在每个服务重复创建自己的密钥和身份；但 Company 的准入策略、权限检查与需要账户时的用户授权仍然有效。
@@ -19,7 +21,7 @@
 要求 Node.js `^22.19.0 || >=24.0.0`、兼容 DSH Host、已发布的身份，以及在 ANP Identity 中批准 `@awiki/dsh-pap/plugin` 这一精确消费者。
 
 ```sh
-pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.1
+pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.3
 ```
 
 源码构建：
@@ -260,7 +262,7 @@ AT/RT 的脱敏不限于一次请求或当前 grant：有效 AS response 在返�
 
 The published package is `@awiki/dsh-pap`. Its identity consumer is
 `@awiki/dsh-pap/plugin`; manager and tool entries use the same package scope.
-Install with `pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.1`.
+Install with `pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.3`.
 
 Earlier unpublished source profiles used `@agentconnect/dsh-pap`. They are not
 silently aliased or granted access under the new consumer. Configure the new
@@ -269,3 +271,13 @@ then approve it. Keep the existing identity Store and keys unchanged. Start the
 new PAP consumer with its own empty state root and matching secret namespace;
 retain old encrypted PAP state and its keys separately rather than editing its
 binding, overwriting keys, or attempting an unauthenticated in-place migration.
+
+## 域名自动连接
+
+一次性启用 `enabled: true, autoConnect: true` 和身份 Host 的全局 `domainAccess` 后，Agent 调用 `pap_connect({domain})`，自动发现 Company、选择默认公共身份、复用或建立未登录账户的 Session，并返回只读操作引用。无需每个域名再到设置页配置。自动接入仅首次启用 GET/HEAD，不启用写操作、账户登录或账户 scope；用户明确禁用的操作和断开的 Session 不会被自动恢复。多个身份必须先选定一个默认身份。域名模式使用独立存储，不迁移或删除旧的静态连接数据；切回静态模式可恢复其原配置存储。存储位置和存储后端由身份 Host 指定，不从 keyring 静默回退。
+
+### 单次操作自动确认
+
+域名模式下，`pap_operations()` 返回已发现操作及 `enabled`、`requiresApproval`、`blocked` 状态。仅无额外权限声明的 GET/HEAD 使用全局只读许可；写入和声明额外 scope 的操作在调用时自动弹出身份 Host 的确认对话框，等待用户点击，不要求用户去设置页手动启用。批准只绑定本次请求的方法、网址、查询参数、请求头和正文，不包含 PAP/OAuth 凭据，不持久启用写权限。用户明确禁用、Session 断开、身份变化、凭据历史不完整或授权撤销仍会阻止请求；实际发送前和完成后均重新检查授权，已批准一次的 POST 不因 `session_ended` 自动重发。
+
+`approvalWaitMs` 默认 120000，范围 0–600000；`approvalPollMs` 默认 1000，范围 10–10000。超时返回 `identity_authorization_required` 和 `error.approval`，指向已打开的对话框，绝不视为批准。取消或卸载会取消待审批请求。账户 OAuth 登录仍是独立流程，此确认不会创建账户 token 或扩大其 scope。结果不确定时不得自动重试。新增可选的 `product.disabled` 记录用于保留明确禁用，不把单次授权变成长期许可。

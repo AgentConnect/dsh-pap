@@ -1,5 +1,7 @@
 # DSH PAP
 
+Domain automatic access and exact-operation confirmation require `@agent-network-protocol/dsh-anp-identity >=0.1.14` in the same Host. The identity peer is optional for library-only use, but the domain plugin must have the new Host consent API. The supported policy is automatic discovered reads plus owner-approved one-shot writes; there is no full-write or chat-controlled global write setting in this release.
+
 **A PAP 0.3 client for DeepSeek Harness (DSH), powered by a reusable, locally held agent identity.**
 
 English | [简体中文](README.zh-CN.md)
@@ -63,7 +65,7 @@ The shared identity can publish DID, CIMD and JWKS material through an identity 
 Install the bundle when its package is available in your registry:
 
 ```sh
-pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.1
+pnpm dsh plugin --profile <profile> add @awiki/dsh-pap@0.1.3
 ```
 
 Build and run unit/component checks from source:
@@ -193,3 +195,13 @@ configure and approve operations in the owner UI, then `pap_operations` and
 `pap_request`. URL path/query values are strings (e.g. `page: "1"`); JSON body
 values retain their types. NoAS is not an account-login flow. The identity plugin's
 `identity_connection_guide` remains available before PAP is configured.
+
+## Domain-based automatic connections
+
+With the one-time Host opt-in `enabled: true, autoConnect: true`, the Agent calls `pap_connect({domain})` instead of asking the owner to configure each Company. The identity Host's `domainAccess` selects the single published identity or its explicit default and supplies a global PAP Session policy and isolated state/secret storage. Discovery remains validated, including the standard discovery redirect. The connector reuses a signed-out Session, enables GET/HEAD operations once, and returns only enabled operation references. It never enables writes, account login, OAuth account scopes or MCP forwarding. Explicit operation disables and disconnected Sessions are preserved. Repeated discovery cannot undo an owner fence. Domain mode uses a separate identity-Host-owned store and does not restore, migrate or delete a legacy static connection store. Switching back to static mode restores its original configured store. In domain mode, state and secret paths come from the identity Host; local-file storage requires that Host's explicit storage choice, with no fallback from keyring. The additive optional `Session.autoReadConfigured` field records initial read setup; older state without the field is treated as not automatically configured.
+
+### Exact-operation owner confirmation
+
+In domain mode, `pap_operations()` exposes discovered operations with `enabled`, `requiresApproval`, and `blocked` facts. Only safe GET/HEAD routes without advertised extra requirements use automatic read permission. A write or an operation declaring extra scopes triggers the identity Host's global confirmation dialog and waits for an owner decision; the model never approves it and does not send the owner to Settings. The request binds the exact method, URL, query, headers and serialized body, excluding PAP/OAuth credentials. Approval is once-only and does not persist a route enablement. Explicit operation disables, disconnected Sessions, identity changes, credential-history gates and revocation still block dispatch. Consent is rechecked immediately before the actual transport call and after completion; a once-approved POST is never automatically replayed after `session_ended`.
+
+`approvalWaitMs` defaults to 120000 (range 0–600000); `approvalPollMs` defaults to 1000 (range 10–10000). Timeout reports `identity_authorization_required` with `error.approval` pointing to the already-open dialog; it never implies approval. Cancellation/unload cancels a pending request. Account OAuth sign-in remains separate: this confirmation does not create an account token or expand its scopes. A reported unknown result must not be retried automatically. The additive `product.disabled` tombstones preserve explicit route denials without converting a one-shot approval into a lasting permission.

@@ -22,7 +22,7 @@ function value(result: ProductResult): Value { assert.equal(result.ok, true, res
 function error(result: ProductResult, code: string) { assert.deepEqual(result, { ok: false, error: { code } }); }
 
 /** Unit C boundary with real fixture cryptography. This is not evidence for the C factory. */
-async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?: FixtureTransport['mode']; missingConfig?: boolean; blockedSecrets?: boolean; missingFactory?: boolean } = {}) {
+async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?: FixtureTransport['mode']; missingConfig?: boolean; blockedSecrets?: boolean; missingFactory?: boolean; autoConnect?: boolean; approvalWaitMs?: number } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'pap-product-unit-'));
   const ctx = new Context(); const host = new FixtureHost(); const transport = new FixtureTransport(); transport.mode = options.mode ?? 'none';
   const tools = new Map<string, any>(); const targetRefs = new WeakSet<object>(); const contexts: Context[] = []; const namespaces: string[] = []; let providerGeneration = 1; let registerCount = 0; let claimCount = 0; let disposedCallbacks = 0; let response: { state: string; iss: string; code: string } | undefined;
@@ -61,7 +61,36 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
       }) as any, dispose() { disposedCallbacks++; } };
     },
   };
+  let domainEnabled = true;
+  let consentDecision = {id:'fixture-consent',status:'pending',version:1,grantId:undefined as string|undefined,mode:undefined as string|undefined};
+  let consentRequests = 0, consentExecutions = 0, consentCancels = 0, consentActive = true;
+  let consentRequest: Request | undefined;
+  let expectedRequest: string | undefined;
+  const requestFingerprint = async (request: Request) => JSON.stringify([request.method,request.url,[...request.headers],await request.clone().text()]);
+  const consent = {
+    async request(input: {requestId:string;purpose:string;request:Request}) {
+      assert(input.purpose.startsWith('PAP exact operation'));
+      assert(!input.request.headers.has('poppy-session') && !input.request.headers.has('authorization') && !input.request.headers.has('dpop'));
+      consentRequests++; consentRequest=input.request.clone(); expectedRequest=await requestFingerprint(input.request);
+      return {...consentDecision};
+    },
+    async status(id: string) {assert.equal(id,consentDecision.id);return {...consentDecision};},
+    async cancel(id: string) {assert.equal(id,consentDecision.id);consentCancels++;consentDecision.status='cancelled';return {...consentDecision};},
+    async execute<T>(grantId: string, request: Request, effect: (assertActive:()=>Promise<void>)=>Promise<T>): Promise<T> {
+      assert.equal(grantId,'once-grant');assert.equal(consentDecision.mode,'once');assert.equal(consentDecision.status,'approved');
+      assert.equal(await requestFingerprint(request),expectedRequest);
+      consentExecutions++;consentDecision.status='consumed';
+      const check=async()=>{if(!consentActive)throw Object.assign(new Error('Revoked'),{code:'grant_inactive'});};
+      await check();const response=await effect(check);await check();return response;
+    },
+  };
   ctx.provide('anpIdentity', {
+    bindDomainOperationConsumer(context: Context) {contexts.push(context);return consent;},
+    async resolveDomainAccess(context: Context, profile: string) {
+      assert.equal(profile, 'pap_session'); contexts.push(context);
+      if (!domainEnabled) throw Object.assign(new Error('Disabled'), {code:'domain_access_disabled'});
+      return { identityRef: binding.identityRef, policyRef: 'host-approved', stateRoot: root, secretsRoot: root + '-keys', secretStore: 'local-file' };
+    },
     ...(options.missingFactory ? {} : { bindPapHostConsumer(context: Context) {
       contexts.push(context); const generation = providerGeneration; let disposed = false;
       return { ...consumer, assertActive() { if (disposed || generation !== providerGeneration) throw Object.assign(new Error('Disposed fixture facade'), { code: 'provider_disposed' }); consumer.assertActive(); }, dispose() { disposed = true; } };
@@ -76,13 +105,15 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   await ctx.plugin(Loader, {}); const loader = ctx.get('loader') as Loader;
   const modules: Record<string, unknown> = { [PAP_CONSUMER]: plugin, [PAP_MANAGER]: ManagerRemote, [PAP_TOOLS]: toolPlugin };
   loader.import = async name => { assert(Object.hasOwn(modules, name)); return modules[name]; };
-  const config = options.missingConfig ? { enabled: true } : { enabled: options.enabled ?? true, stateRoot: root, policyRef: 'host-approved', keyringService: 'pap-isolated-unit-never-created' };
+  const config = options.autoConnect ? { enabled: true, autoConnect: true, approvalWaitMs: options.approvalWaitMs ?? 2000, approvalPollMs: 10 } : options.missingConfig ? { enabled: true } : { enabled: options.enabled ?? true, stateRoot: root, policyRef: 'host-approved', keyringService: 'pap-isolated-unit-never-created' };
   await loader.create({ name: PAP_CONSUMER, config });
   await loader.create({ name: PAP_MANAGER }); await loader.create({ name: PAP_TOOLS }); await loader.await();
   const service = ctx.pap; const manager = ctx.get('papManager') as unknown as InstanceType<typeof ManagerRemote>;
-  const execute = async (name: string, args: unknown = {}) => tools.get(name).execute(args, { agent: {}, signal: new AbortController().signal });
-  t.after(async () => { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }); });
-  return { root, ctx, loader, host, transport, service, manager, execute, tools, contexts, namespaces, config, select: async () => manager.manage({ action: 'identity/select', reference: binding.identityRef }),
+  const execute = async (name: string, args: unknown = {}, signal = new AbortController().signal) => tools.get(name).execute(args, { agent: {}, signal });
+  t.after(async () => { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }); await rm(root + '-keys', { recursive: true, force: true }); });
+  return { root, ctx, loader, host, transport,
+    consent: {approve(mode='once') {consentDecision={...consentDecision,status:'approved',grantId:'once-grant',mode};},deny(){consentDecision.status='denied';},revoke(){consentActive=false;},get requests(){return consentRequests;},get executions(){return consentExecutions;},get cancels(){return consentCancels;},get status(){return consentDecision.status;},get request(){return consentRequest;}},
+    disableDomain() { domainEnabled = false; }, service, manager, execute, tools, contexts, namespaces, config, select: async () => manager.manage({ action: 'identity/select', reference: binding.identityRef }),
     setResponse(value: typeof response) { response = value; }, advanceProvider() { providerGeneration++; },
     pauseNextKeyRead() { let entered!: () => void; let release!: () => void; const start = new Promise<void>(resolve => entered = resolve); const gate = new Promise<void>(resolve => release = resolve); pauseKey = { entered, gate }; return { start, release }; },
     get counts() { return { registerCount, claimCount, disposedCallbacks }; } };
@@ -121,7 +152,7 @@ test('PAP product: installed manager and tools are distinct, raw contexts and wi
   const entry = [...f.loader.entries()].find(value => value.options.name === PAP_CONSUMER)!;
   assert(f.contexts.every(context => context.fiber === (entry.fiber as any).ctx.fiber));
   error(await f.execute('pap_request', { operationRef: 'made-up', url: 'https://evil.example', scopes: [] }), 'permission_denied');
-  assert.deepEqual([...f.tools.keys()], ['pap_status','pap_operations','pap_request']);
+  assert.deepEqual([...f.tools.keys()], ['pap_connect','pap_status','pap_operations','pap_request']);
   assert(f.tools.get('pap_status').description.includes('https://agent-network-protocol.com'));
   assert(f.tools.get('pap_status').description.includes('supports MCP, ANP and PAP'));
 });
@@ -372,4 +403,110 @@ test('PAP product: callback collection revalidates expired discovery before requ
   const engine=(f.service as unknown as {client:PapClient}).client;await engine.store.transaction(state=>{for(const company of Object.values(state.companies))company.expiresAt=Date.now()-1;});
   const before=f.transport.calls.filter(call=>call.url.endsWith('poppy.json')).length;value(await f.manager.manage({action:'account/collect',transactionRef:pending.transactionRef}));
   assert.equal(f.transport.calls.filter(call=>call.url.endsWith('poppy.json')).length,before+1);assert.equal(f.counts.claimCount,1);
+});
+
+// Domain-mode product coverage uses the real Loader, store and signed-request path.
+test('PAP domain mode: discovers and connects once, enables only reads and preserves owner fences', async t => {
+  const f = await fixture(t, { autoConnect: true });
+  const first = value(await f.execute('pap_connect', { domain: 'shop.example' }));
+  assert(first.operations.length > 0);
+  assert(first.operations.every((operation: Value) => ['GET', 'HEAD'].includes(operation.method)));
+  assert.equal(value(await f.execute('pap_status')).sessions.length, 1);
+  const operation = first.operations.find((entry: Value) => entry.path === '/api/cart'); assert(operation);
+  assert.equal(value(await f.execute('pap_request', { operationRef: operation.operationRef })).status, 200);
+  await Promise.all([f.execute('pap_connect', { domain: 'shop.example' }), f.execute('pap_connect', { domain: 'shop.example' })]);
+  assert.equal(value(await f.execute('pap_status')).sessions.length, 1);
+  value(await f.manager.manage({ action: 'operation/disable', operationRef: operation.operationRef }));
+  const again = value(await f.execute('pap_connect', { domain: 'shop.example' }));
+  assert(!again.operations.some((entry: Value) => entry.operationRef === operation.operationRef));
+  error(await f.execute('pap_request', { operationRef: operation.operationRef }), 'permission_denied');
+  const status = value(await f.manager.status());
+  value(await f.manager.manage({ action: 'session/disconnect', sessionRef: status.sessions[0].sessionRef }));
+  error(await f.execute('pap_connect', { domain: 'shop.example' }), 'disconnected');
+  assert(!f.transport.calls.some(call => call.url.endsWith('/token')));
+});
+test('PAP domain mode: global opt-in is required and malformed domains never dispatch', async t => {
+  const f = await fixture(t, { autoConnect: true });
+  error(await f.execute('pap_connect', { domain: 'https://shop.example' }), 'unsafe_destination');
+  f.disableDomain();
+  error(await f.execute('pap_connect', { domain: 'shop.example' }), 'domain_access_disabled');
+  assert.equal(f.transport.calls.length, 0);
+  const legacy = await fixture(t);
+  error(await legacy.execute('pap_connect', { domain: 'shop.example' }), 'not_configured');
+  assert.equal(legacy.transport.calls.length, 0);
+});
+
+async function domainWrite(f: Awaited<ReturnType<typeof fixture>>) {
+  value(await f.execute('pap_connect',{domain:'shop.example'}));
+  const operations=value(await f.execute('pap_operations')) as unknown as Value[];
+  const write=operations.find(operation=>operation.method==='POST'&&operation.path==='/api/cart'); assert(write);
+  assert.equal(write.enabled,false);assert.equal(write.requiresApproval,true);
+  return write;
+}
+async function untilConsent(f: Awaited<ReturnType<typeof fixture>>) {
+  for(let index=0;index<100&&!f.consent.requests;index++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.equal(f.consent.requests,1);
+}
+test('PAP domain consent: an advertised write waits for one exact owner grant without enabling its route', async t=>{
+  const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);
+  const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{message:'approved body'}});
+  await untilConsent(f);assert.equal(f.transport.calls.filter(call=>call.options?.method==='POST'&&call.url.includes('/api/')).length,0);
+  assert.equal(await f.consent.request!.clone().text(),'{"message":"approved body"}');
+  f.consent.approve();assert.equal(value(await pending).status,200);assert.equal(f.consent.executions,1);
+  const current=value(await f.execute('pap_operations')) as unknown as Value[];
+  assert.equal(current.find(operation=>operation.operationRef===write.operationRef)!.enabled,false);
+  assert.equal(f.transport.calls.filter(call=>call.options?.method==='POST'&&call.url.includes('/api/')).length,1);
+});
+test('PAP domain consent: denial, timeout and permanent grants never send a write',async t=>{
+  for(const outcome of ['deny','timeout','permanent']){
+    const f=await fixture(t,{autoConnect:true,approvalWaitMs:outcome==='timeout'?20:2000});const write=await domainWrite(f);
+    const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{message:'not sent'}});
+    await untilConsent(f);
+    if(outcome==='deny')f.consent.deny();else if(outcome==='permanent')f.consent.approve('permanent');
+    const result=await pending;
+    if(outcome==='timeout')assert.deepEqual(result,{ok:false,error:{code:'identity_authorization_required',approval:{requestId:'fixture-consent',presentation:'dialog',status:'pending'}}});
+    else error(result,outcome==='deny'?'identity_authorization_denied':'permission_denied');
+    assert.equal(f.consent.executions,0);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,0);
+  }
+});
+test('PAP domain consent: cancellation and unload cancel pending approval and never send after a late click',async t=>{
+  for(const unload of [false,true]){
+    const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);const controller=new AbortController();
+    const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{}},controller.signal);
+    await untilConsent(f);
+    if(unload)await f.ctx.fiber.dispose();else controller.abort();
+    error(await pending,'disconnected');assert.equal(f.consent.cancels,1);assert.equal(f.consent.status,'cancelled');f.consent.approve();
+    assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,0);
+  }
+});
+test('PAP domain consent: disable/disconnect/revocation while awaiting or signing fences actual send',async t=>{
+  for(const action of ['disable','disconnect','revoke']){
+    const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);
+    if(action==='revoke'){
+      const acquire=f.host.acquire.bind(f.host);
+      f.host.acquire=async(...args)=>{const lease=await acquire(...args);return {...lease,signPapSessionRequest:async input=>{const signed=await lease.signPapSessionRequest(input);f.consent.revoke();return signed;}};};
+    }
+    const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{}});await untilConsent(f);
+    if(action==='disable')value(await f.manager.manage({action:'operation/disable',operationRef:write.operationRef}));
+    if(action==='disconnect'){const status=value(await f.manager.status());value(await f.manager.manage({action:'session/disconnect',sessionRef:status.sessions[0].sessionRef}));}
+    f.consent.approve();const result=await pending;assert.equal(result.ok,false);
+    assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,0);
+  }
+});
+test('PAP domain consent: a session_ended response cannot replay a once-approved POST',async t=>{
+  const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);
+  f.transport.override=(url,options)=>url.includes('/api/cart')&&options?.method==='POST'?jsonResponse(url,{error:'session_ended'},409):undefined;
+  const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{}});await untilConsent(f);f.consent.approve();
+  error(await pending,'session_ended');assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);
+});
+
+test('PAP domain consent: GET operations with advertised extra scopes are not automatic reads',async t=>{
+  const f=await fixture(t,{autoConnect:true});
+  f.transport.override=url=>new URL(url).pathname==='/openapi.json'?jsonResponse(url,{openapi:'3.1.0',servers:[{url:'https://shop.example'}],paths:{'/api/extra':{get:{security:[{oauth:['account.read']}]}}}}):undefined;
+  const connected=value(await f.execute('pap_connect',{domain:'shop.example'}));assert.deepEqual(connected.operations,[]);
+  const operations=value(await f.execute('pap_operations')) as unknown as Value[];assert.equal(operations.length,1);
+  assert.equal(operations[0]!.requiresApproval,true);assert.equal(operations[0]!.enabled,false);
+  const pending=f.execute('pap_request',{operationRef:operations[0]!.operationRef});await untilConsent(f);
+  assert.equal(f.transport.calls.filter(call=>call.url.endsWith('/api/extra')).length,0);f.consent.approve();
+  assert.equal(value(await pending).status,200);assert.equal(f.consent.executions,1);
 });

@@ -143,7 +143,11 @@ export class PapDiscovery {
                     if (index >= 0) parameters[index] = value; else parameters.push(value);
                   }
                 }
-                routes.push({ method: method.toUpperCase(), template: `${base.href.replace(/\/$/, '')}${path}`, resource, parameters, channel: 'openapi' });
+                const security = object(operation).security === undefined ? spec.security : object(operation).security;
+                const requiresConsent = object(operation).requestBody !== undefined || security !== undefined &&
+                  (!Array.isArray(security) || security.some(requirement => !requirement || typeof requirement !== 'object' || Array.isArray(requirement)
+                    || Object.values(requirement).some(scopes => !Array.isArray(scopes) || scopes.length > 0)));
+                routes.push({ method: method.toUpperCase(), template: `${base.href.replace(/\/$/, '')}${path}`, resource, parameters, channel: 'openapi', ...(requiresConsent ? { requiresConsent: true } : {}) });
               }
             }
           }
