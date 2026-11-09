@@ -36,4 +36,9 @@ export const operationRequestSchema = z.object({
   body: z.json().optional(),
 }).strict();
 export type PapOperationRequest = z.infer<typeof operationRequestSchema>;
-export type ProductResult = { ok: true; value: unknown } | { ok: false; error: { code: string; retryAfterSeconds?: number | string; approval?: { requestId: string; presentation: 'dialog'; status: 'pending' } } };
+export interface PapRequestTrace {
+  phase: 'prepare' | 'approval' | 'identity' | 'request' | 'response';
+  businessRequest: 'not_sent' | 'unknown' | 'response_received';
+  httpStatus?: number;
+}
+export type ProductResult = { ok: true; value: unknown } | { ok: false; error: Partial<PapRequestTrace> & { code: string; retryAfterSeconds?: number | string; approval?: { requestId: string; presentation: 'dialog'; status: 'pending' } } };

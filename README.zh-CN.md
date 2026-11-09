@@ -281,3 +281,7 @@ binding, overwriting keys, or attempting an unauthenticated in-place migration.
 域名模式下，`pap_operations()` 返回已发现操作及 `enabled`、`requiresApproval`、`blocked` 状态。仅无额外权限声明的 GET/HEAD 使用全局只读许可；写入和声明额外 scope 的操作在调用时自动弹出身份 Host 的确认对话框，等待用户点击，不要求用户去设置页手动启用。批准只绑定本次请求的方法、网址、查询参数、请求头和正文，不包含 PAP/OAuth 凭据，不持久启用写权限。用户明确禁用、Session 断开、身份变化、凭据历史不完整或授权撤销仍会阻止请求；实际发送前和完成后均重新检查授权，已批准一次的 POST 不因 `session_ended` 自动重发。
 
 `approvalWaitMs` 默认 120000，范围 0–600000；`approvalPollMs` 默认 1000，范围 10–10000。超时返回 `identity_authorization_required` 和 `error.approval`，指向已打开的对话框，绝不视为批准。取消或卸载会取消待审批请求。账户 OAuth 登录仍是独立流程，此确认不会创建账户 token 或扩大其 scope。结果不确定时不得自动重试。新增可选的 `product.disabled` 记录用于保留明确禁用，不把单次授权变成长期许可。
+
+### 审批重试与业务请求诊断
+
+PAP 服务保留绑定的授权对象，超时后的同一请求可继续查询原审批，不再因新对象不认识旧请求而失败。缓存键绑定所选身份、策略和完整请求，不能跨身份或正文借用授权。`pap_request` 失败时增加 `phase` 和 `businessRequest`：`not_sent` 表示尚未开始业务传输；`unknown` 表示已尝试传输但没有收到响应；`response_received` 表示已收到响应，并保留 `httpStatus`，即使后续本地权限检查失败。不能仅凭本地错误码认定服务端没有收到请求，也不能把传输尝试当成已送达。

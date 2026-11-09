@@ -26,6 +26,8 @@ export interface PapDispatchControl {
   assertConsent?: () => Promise<void>;
   /** A single owner decision never authorizes an automatic second business send. */
   singleOperation?: boolean;
+  /** Business dispatch observations only; an attempted transport call is not proof of delivery. */
+  observeBusiness?: (event: 'attempted' | 'response', status?: number) => void;
   /** Host-only in-memory response redaction set; never register this callback on a wire surface. */
   captureSecrets?: (values: readonly string[], credentials?: CredentialObservation) => void;
 }
@@ -289,7 +291,9 @@ export class PapClient {
           requirePap(this.company(current, subject.companyRef).generation === company.generation && currentSession.generation === session.generation && current.delegations[subject.ref]?.generation === delegation.generation, 'state_conflict');
           if (grant) { this.assertAccountEpoch(current, subject, grant.accountSlot, grant.accountEpoch); requirePap(current.grants[grant.ref]?.generation === grant.generation && current.grants[grant.ref]?.status === 'active', 'state_conflict'); }
           control.captureSecrets?.([sessionJwt, sentHeaders.dpop, sentHeaders.authorization, grant?.accessToken, grant?.refreshToken, subject.userId, subject.agentId, session.sid].filter((value): value is string => Boolean(value)), grant ? { accessToken: grant.accessToken, refreshToken: grant.refreshToken, accessExpiresInMs: grant.expiresAt === undefined ? undefined : Math.max(0, grant.expiresAt - this.clock()) } : undefined);
+          control.observeBusiness?.('attempted');
           const response = await this.transport.request(url, { method, headers: sentHeaders, body: frozen.body, signal: controller.signal });
+          control.observeBusiness?.('response',response.status);
           if (response.status === 429) recordCooldown(current, cooldownKey, response, this.clock());
           return response;
         });

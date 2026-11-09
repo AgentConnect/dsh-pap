@@ -19,7 +19,7 @@ import { PapClient } from '../src/client.js';
 
 type Value = Record<string, any>;
 function value(result: ProductResult): Value { assert.equal(result.ok, true, result.ok ? undefined : result.error.code); return (result as { value: Value }).value; }
-function error(result: ProductResult, code: string) { assert.deepEqual(result, { ok: false, error: { code } }); }
+function error(result: ProductResult, code: string) { assert.equal(result.ok,false); if(result.ok)throw new Error('Expected refusal'); assert.equal(result.error.code,code); assert(Object.keys(result.error).every(key=>['code','phase','businessRequest','httpStatus','retryAfterSeconds','approval'].includes(key))); }
 
 /** Unit C boundary with real fixture cryptography. This is not evidence for the C factory. */
 async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?: FixtureTransport['mode']; missingConfig?: boolean; blockedSecrets?: boolean; missingFactory?: boolean; autoConnect?: boolean; approvalWaitMs?: number } = {}) {
@@ -63,6 +63,7 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   };
   let domainEnabled = true;
   let consentDecision = {id:'fixture-consent',status:'pending',version:1,grantId:undefined as string|undefined,mode:undefined as string|undefined};
+  let consentBindings = 0;
   let consentRequests = 0, consentExecutions = 0, consentCancels = 0, consentActive = true;
   let consentRequest: Request | undefined;
   let expectedRequest: string | undefined;
@@ -85,7 +86,16 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
     },
   };
   ctx.provide('anpIdentity', {
-    bindDomainOperationConsumer(context: Context) {contexts.push(context);return consent;},
+    bindDomainOperationConsumer(context: Context) {
+      contexts.push(context); consentBindings++;
+      const owned = new Set<string>();
+      return {
+        async request(input: Parameters<typeof consent.request>[0]) { const decision = await consent.request(input); owned.add(decision.id); return decision; },
+        async status(id: string) { if (!owned.has(id)) throw Object.assign(new Error('Request belongs to a different bound facade'), {code:'consumer_forbidden'}); return consent.status(id); },
+        async cancel(id: string) { if (!owned.has(id)) throw Object.assign(new Error('Request belongs to a different bound facade'), {code:'consumer_forbidden'}); return consent.cancel(id); },
+        execute: consent.execute,
+      };
+    },
     async resolveDomainAccess(context: Context, profile: string) {
       assert.equal(profile, 'pap_session'); contexts.push(context);
       if (!domainEnabled) throw Object.assign(new Error('Disabled'), {code:'domain_access_disabled'});
@@ -112,7 +122,7 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   const execute = async (name: string, args: unknown = {}, signal = new AbortController().signal) => tools.get(name).execute(args, { agent: {}, signal });
   t.after(async () => { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }); await rm(root + '-keys', { recursive: true, force: true }); });
   return { root, ctx, loader, host, transport,
-    consent: {approve(mode='once') {consentDecision={...consentDecision,status:'approved',grantId:'once-grant',mode};},deny(){consentDecision.status='denied';},revoke(){consentActive=false;},get requests(){return consentRequests;},get executions(){return consentExecutions;},get cancels(){return consentCancels;},get status(){return consentDecision.status;},get request(){return consentRequest;}},
+    consent: {approve(mode='once') {consentDecision={...consentDecision,status:'approved',grantId:'once-grant',mode};},deny(){consentDecision.status='denied';},revoke(){consentActive=false;},get bindings(){return consentBindings;},get requests(){return consentRequests;},get executions(){return consentExecutions;},get cancels(){return consentCancels;},get status(){return consentDecision.status;},get request(){return consentRequest;}},
     disableDomain() { domainEnabled = false; }, service, manager, execute, tools, contexts, namespaces, config, select: async () => manager.manage({ action: 'identity/select', reference: binding.identityRef }),
     setResponse(value: typeof response) { response = value; }, advanceProvider() { providerGeneration++; },
     pauseNextKeyRead() { let entered!: () => void; let release!: () => void; const start = new Promise<void>(resolve => entered = resolve); const gate = new Promise<void>(resolve => release = resolve); pauseKey = { entered, gate }; return { start, release }; },
@@ -464,7 +474,7 @@ test('PAP domain consent: denial, timeout and permanent grants never send a writ
     await untilConsent(f);
     if(outcome==='deny')f.consent.deny();else if(outcome==='permanent')f.consent.approve('permanent');
     const result=await pending;
-    if(outcome==='timeout')assert.deepEqual(result,{ok:false,error:{code:'identity_authorization_required',approval:{requestId:'fixture-consent',presentation:'dialog',status:'pending'}}});
+    if(outcome==='timeout')assert.deepEqual(result,{ok:false,error:{code:'identity_authorization_required',approval:{requestId:'fixture-consent',presentation:'dialog',status:'pending'},phase:'approval',businessRequest:'not_sent'}});
     else error(result,outcome==='deny'?'identity_authorization_denied':'permission_denied');
     assert.equal(f.consent.executions,0);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,0);
   }
@@ -497,7 +507,7 @@ test('PAP domain consent: a session_ended response cannot replay a once-approved
   const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);
   f.transport.override=(url,options)=>url.includes('/api/cart')&&options?.method==='POST'?jsonResponse(url,{error:'session_ended'},409):undefined;
   const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{}});await untilConsent(f);f.consent.approve();
-  error(await pending,'session_ended');assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);
+  const result=await pending;error(result,'session_ended');assert(!result.ok);assert.equal(result.error.businessRequest,'response_received');assert.equal(result.error.httpStatus,409);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);
 });
 
 test('PAP domain consent: GET operations with advertised extra scopes are not automatic reads',async t=>{
@@ -509,4 +519,40 @@ test('PAP domain consent: GET operations with advertised extra scopes are not au
   const pending=f.execute('pap_request',{operationRef:operations[0]!.operationRef});await untilConsent(f);
   assert.equal(f.transport.calls.filter(call=>call.url.endsWith('/api/extra')).length,0);f.consent.approve();
   assert.equal(value(await pending).status,200);assert.equal(f.consent.executions,1);
+});
+
+test('PAP domain consent: timeout retries preserve the original request owner until approval',async t=>{
+  const f=await fixture(t,{autoConnect:true,approvalWaitMs:0});const write=await domainWrite(f);
+  const args={operationRef:write.operationRef,body:{message:'same exact request'}};
+  const first=await f.execute('pap_request',args);assert.equal(first.ok,false);
+  const again=await f.execute('pap_request',args);assert.deepEqual(again,first);
+  assert.equal(f.consent.requests,1);assert.equal(f.consent.bindings,1);
+  assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,0);
+  f.consent.approve();const approved=value(await f.execute('pap_request',args));assert.equal(approved.status,200);
+  assert.equal(f.consent.executions,1);assert.equal(f.consent.requests,1);
+  assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,1);
+});
+test('PAP domain consent: a refused pending request stays refused on retry without sending',async t=>{
+  const f=await fixture(t,{autoConnect:true,approvalWaitMs:0});const write=await domainWrite(f);
+  const args={operationRef:write.operationRef,body:{message:'refused'}};
+  await f.execute('pap_request',args);f.consent.deny();
+  error(await f.execute('pap_request',args),'identity_authorization_denied');
+  assert.equal(f.consent.requests,1);assert.equal(f.consent.executions,0);
+  assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/')).length,0);
+});
+
+test('PAP business diagnostics do not report an attempted transport failure as definitely unsent',async t=>{
+  const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);
+  f.transport.override=(url,options)=>{if(url.includes('/api/cart')&&options?.method==='POST')throw new Error('Isolated lost response');return undefined;};
+  const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{}});await untilConsent(f);f.consent.approve();
+  const result=await pending;assert(!result.ok);assert.equal(result.error.businessRequest,'unknown');assert.equal(result.error.phase,'request');
+  assert.equal(f.consent.executions,1);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);
+});
+
+test('PAP business diagnostics retain a received response when a later local consent check fails',async t=>{
+  const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);
+  f.transport.override=(url,options)=>{if(url.includes('/api/cart')&&options?.method==='POST'){f.consent.revoke();return jsonResponse(url,{created:true},200);}return undefined;};
+  const pending=f.execute('pap_request',{operationRef:write.operationRef,body:{}});await untilConsent(f);f.consent.approve();
+  const result=await pending;assert(!result.ok);assert.equal(result.error.businessRequest,'response_received');assert.equal(result.error.httpStatus,200);
+  assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);
 });
