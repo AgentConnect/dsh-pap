@@ -118,10 +118,11 @@ export class PapClient {
   private async ensureCompanyFresh(subjectRef: string): Promise<void> {
     const state = await this.store.read(); const subject = this.subject(state, subjectRef); const company = this.company(state, subject.companyRef);
     if (company.expiresAt > this.clock()) return;
-    const existing = this.discoveryFlights.get(company.domain); if (existing) return existing;
-    const flight = this.resolvePapCompany(company.domain).then(result => { requirePap(result.companyId === company.companyId, 'namespace_changed'); });
-    this.discoveryFlights.set(company.domain, flight);
-    try { await flight; } finally { if (this.discoveryFlights.get(company.domain) === flight) this.discoveryFlights.delete(company.domain); }
+    const discoveryDomain=company.discoveryOrigin?new URL(company.discoveryOrigin).host:company.domain;
+    const existing = this.discoveryFlights.get(discoveryDomain); if (existing) return existing;
+    const flight = this.resolvePapCompany(discoveryDomain).then(result => { requirePap(result.companyId === company.companyId, 'namespace_changed'); });
+    this.discoveryFlights.set(discoveryDomain, flight);
+    try { await flight; } finally { if (this.discoveryFlights.get(discoveryDomain) === flight) this.discoveryFlights.delete(discoveryDomain); }
   }
   private async lease(subject: Subject, purpose: 'pap_session' | 'pap_account', resource: string, destination?: string, requestedScopes: readonly string[] = []): Promise<PapSigningLease> {
     requirePap(!this.closed, 'disconnected');
@@ -281,6 +282,7 @@ export class PapClient {
       if (control.signal?.aborted) controller.abort();
       const active = this.abortedSessions.get(sessionRef) ?? new Set(); active.add(controller); this.abortedSessions.set(sessionRef, active);
       let response: HttpResponse;
+      let businessAttempted = false;
       try {
         // Same lock orders local disconnect/signout versus actual dispatch. No await between final CAS and HTTP start.
         response = await this.store.transaction(async current => {
@@ -292,12 +294,13 @@ export class PapClient {
           if (grant) { this.assertAccountEpoch(current, subject, grant.accountSlot, grant.accountEpoch); requirePap(current.grants[grant.ref]?.generation === grant.generation && current.grants[grant.ref]?.status === 'active', 'state_conflict'); }
           control.captureSecrets?.([sessionJwt, sentHeaders.dpop, sentHeaders.authorization, grant?.accessToken, grant?.refreshToken, subject.userId, subject.agentId, session.sid].filter((value): value is string => Boolean(value)), grant ? { accessToken: grant.accessToken, refreshToken: grant.refreshToken, accessExpiresInMs: grant.expiresAt === undefined ? undefined : Math.max(0, grant.expiresAt - this.clock()) } : undefined);
           control.observeBusiness?.('attempted');
+          businessAttempted = true;
           const response = await this.transport.request(url, { method, headers: sentHeaders, body: frozen.body, signal: controller.signal });
           control.observeBusiness?.('response',response.status);
           if (response.status === 429) recordCooldown(current, cooldownKey, response, this.clock());
           return response;
         });
-      } catch (error) { if (error instanceof PapError) throw error; throw new PapError('request_uncertain'); }
+      } catch (error) { if (error instanceof PapError || !businessAttempted) throw error; throw new PapError('request_uncertain'); }
       finally { control.signal?.removeEventListener('abort', cancel); active.delete(controller); if (active.size === 0) this.abortedSessions.delete(sessionRef); }
       if (response.status >= 300 && response.status < 400) throw new PapError('redirect_blocked');
       if (response.status === 429) { const limited = await this.store.read(); throw cooldownError(limited, cooldownKey, this.clock()); }
@@ -310,10 +313,10 @@ export class PapClient {
       }
       if (error === 'invalid_session') throw new PapError('invalid_session');
       if (grant && error === 'use_dpop_nonce' && responseHeader(response, 'dpop-nonce') && !retriedNonce) {
-        retriedNonce = true; await this.saveNonce(`resource:${new URL(url).origin}`, responseHeader(response, 'dpop-nonce')!); if (['GET','HEAD','OPTIONS'].includes(method)) continue; throw authenticationError('invalid_dpop_proof', failure.hint);
+        retriedNonce = true; await this.saveNonce(`resource:${new URL(url).origin}`, responseHeader(response, 'dpop-nonce')!); if (!control.singleOperation && ['GET','HEAD','OPTIONS'].includes(method)) continue; throw authenticationError('invalid_dpop_proof', failure.hint);
       }
       if (grant && error === 'invalid_token') {
-        if (!retriedToken && grant.refreshToken && ['GET','HEAD','OPTIONS'].includes(method)) { retriedToken = true; await this.refreshAccountGrant(grant.ref, sessionRef); continue; }
+        if (!control.singleOperation && !retriedToken && grant.refreshToken && ['GET','HEAD','OPTIONS'].includes(method)) { retriedToken = true; await this.refreshAccountGrant(grant.ref, sessionRef); continue; }
         throw authenticationError('invalid_token', failure.hint);
       }
       if (error === 'insufficient_scope' || error === 'unauthorized_client' || failure.challenge) throw authenticationError(error, failure.hint);

@@ -272,16 +272,16 @@ new PAP consumer with its own empty state root and matching secret namespace;
 retain old encrypted PAP state and its keys separately rather than editing its
 binding, overwriting keys, or attempting an unauthenticated in-place migration.
 
-## 域名自动连接
+## 域名自动连接与统一权限
 
-一次性启用 `enabled: true, autoConnect: true` 和身份 Host 的全局 `domainAccess` 后，Agent 调用 `pap_connect({domain})`，自动发现 Company、选择默认公共身份、复用或建立未登录账户的 Session，并返回只读操作引用。无需每个域名再到设置页配置。自动接入仅首次启用 GET/HEAD，不启用写操作、账户登录或账户 scope；用户明确禁用的操作和断开的 Session 不会被自动恢复。多个身份必须先选定一个默认身份。域名模式使用独立存储，不迁移或删除旧的静态连接数据；切回静态模式可恢复其原配置存储。存储位置和存储后端由身份 Host 指定，不从 keyring 静默回退。
+一次性启用 PAP 和 Host 全局域名接入后，只需 `pap_connect({domain})`，不再每个站点配置 Company 和许可。当前候选由 Identity 的共享“协议管理”替代旧 PAP 设置导航；浏览器入口也不再导出旧手工表单，但保留原加密连接、凭据与 Host 诊断接口，不迁移或删除用户数据。
 
-### 单次操作自动确认
+发现记录保留最初域名及已验证的重定向绑定，刷新仍从该源开始。`pap_operations()` 返回 `effect`、`permission`（allow/ask/deny）、`requiresApproval`、`blocked`。每次业务请求都检查统一读写规则，已有只读启用记录不能绕过新禁止。允许直接执行，不重复确认，也不持久写入操作许可；询问自动弹出本次操作确认框；禁止或明确禁用不发送。账户 OAuth 登录及其 scope 仍独立管理。
 
-域名模式下，`pap_operations()` 返回已发现操作及 `enabled`、`requiresApproval`、`blocked` 状态。仅无额外权限声明的 GET/HEAD 使用全局只读许可；写入和声明额外 scope 的操作在调用时自动弹出身份 Host 的确认对话框，等待用户点击，不要求用户去设置页手动启用。批准只绑定本次请求的方法、网址、查询参数、请求头和正文，不包含 PAP/OAuth 凭据，不持久启用写权限。用户明确禁用、Session 断开、身份变化、凭据历史不完整或授权撤销仍会阻止请求；实际发送前和完成后均重新检查授权，已批准一次的 POST 不因 `session_ended` 自动重发。
+分类结合方法、请求正文与安全声明，以及可选的 `x-agent-effect`、`x-agent-annotations`；支持明确声明的 POST 只读查询。未知、明确支付及额外权限即使在全写允许时仍单独确认。需要匹配候选的 Identity Host API，缺少时失败关闭，不退回旧授权路径；正式依赖版本发布前再锁定。
 
-`approvalWaitMs` 默认 120000，范围 0–600000；`approvalPollMs` 默认 1000，范围 10–10000。超时返回 `identity_authorization_required` 和 `error.approval`，指向已打开的对话框，绝不视为批准。取消或卸载会取消待审批请求。账户 OAuth 登录仍是独立流程，此确认不会创建账户 token 或扩大其 scope。结果不确定时不得自动重试。新增可选的 `product.disabled` 记录用于保留明确禁用，不把单次授权变成长期许可。
+等待确认默认 120 秒，可用 `approvalWaitMs`、`approvalPollMs` 配置。超时后保留原授权对象，缓存绑定身份、Host 策略、统一策略版本和完整请求。取消、卸载、身份变化、既有拒绝、断开和撤权都会阻止后续执行；已批准或规则允许的变更操作也不因 Session、token 或 nonce 响应自动重放。
 
-### 审批重试与业务请求诊断
+失败结果的 `phase` 和 `businessRequest` 区分未开始业务传输、传输结果未知、已收到响应。已收到响应时保留 `httpStatus`，不能仅凭本地错误认定未发送，也不能把传输尝试当作已送达。不确定写入不得自动重试。当前候选已完成两站三协议真实读写，尚未发布 npm。
 
-PAP 服务保留绑定的授权对象，超时后的同一请求可继续查询原审批，不再因新对象不认识旧请求而失败。缓存键绑定所选身份、策略和完整请求，不能跨身份或正文借用授权。`pap_request` 失败时增加 `phase` 和 `businessRequest`：`not_sent` 表示尚未开始业务传输；`unknown` 表示已尝试传输但没有收到响应；`response_received` 表示已收到响应，并保留 `httpStatus`，即使后续本地权限检查失败。不能仅凭本地错误码认定服务端没有收到请求，也不能把传输尝试当成已送达。
+第三批 Identity 候选提供 `protocol_permissions`、`identity_settings`，让 Agent 在会话内确认后修改持续配置。新的显式 `pap_connect` 会采用已保存的默认身份及准入版本，不删除旧会话或凭据；在途请求仍受原引擎／身份边界约束。配置确认不等于业务请求审批，也不开放通用签名。

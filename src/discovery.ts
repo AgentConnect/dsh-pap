@@ -11,6 +11,7 @@ export class PapDiscovery {
   private async discover(domain: string): Promise<Company> {
     requirePap(!/[/?#@\\]/.test(domain) && domain.length > 0, 'unsafe_destination');
     let url = httpsUrl(`https://${domain}/.well-known/poppy.json`);
+    const discoveryOrigin = url.origin;
     const sources: { url: string; digest: string }[] = [];
     const started = Date.now(); let requests = 0; let bytes = 0;
     const request = async (target: string): Promise<HttpResponse> => {
@@ -78,6 +79,7 @@ export class PapDiscovery {
       };
     }
     const routes: Route[] = [];
+    let schemaBytes = 0;
     const discoveredScopes = new Set<string>();
     const resourceCache = new Map<string, string>();
     const serviceResource = async (service: string, mcp = false): Promise<string> => {
@@ -147,7 +149,13 @@ export class PapDiscovery {
                 const requiresConsent = object(operation).requestBody !== undefined || security !== undefined &&
                   (!Array.isArray(security) || security.some(requirement => !requirement || typeof requirement !== 'object' || Array.isArray(requirement)
                     || Object.values(requirement).some(scopes => !Array.isArray(scopes) || scopes.length > 0)));
-                routes.push({ method: method.toUpperCase(), template: `${base.href.replace(/\/$/, '')}${path}`, resource, parameters, channel: 'openapi', ...(requiresConsent ? { requiresConsent: true } : {}) });
+                const schema = publicBodySchema(object(operation),262144-schemaBytes);
+                if(schema.bodySchema!==undefined)schemaBytes+=Buffer.byteLength(JSON.stringify(schema.bodySchema));
+                routes.push({ method: method.toUpperCase(), template: `${base.href.replace(/\/$/, '')}${path}`, resource, parameters, channel: 'openapi', ...(requiresConsent ? { requiresConsent: true } : {}),
+                  ...(typeof object(operation).operationId==='string'?{operationId:String(object(operation).operationId).slice(0,256)}:{}),...schema,
+                  policyEvidence: {hasRequestBody:object(operation).requestBody!==undefined,...(security===undefined?{}:{security}),
+                    ...(object(operation)['x-agent-effect']===undefined?{}:{declaredEffect:object(operation)['x-agent-effect']}),
+                    ...(object(operation)['x-agent-annotations']===undefined?{}:{annotations:object(operation)['x-agent-annotations']})} });
               }
             }
           }
@@ -165,8 +173,28 @@ export class PapDiscovery {
     }
     requirePap(routes.length > 0 && routes.length <= 2048, 'unsupported_profile');
     const scopes = [...new Set([...(auth.scopes === undefined ? [] : Object.keys(object(auth.scopes))), ...discoveredScopes, ...advertisedScopes])];
-    return { ref: id('cmp'), domain: url.host.toLowerCase(), name: organization.name, companyId: issuer ?? origin, issuer,
+    return { ref: id('cmp'), discoveryOrigin, domain: url.host.toLowerCase(), name: organization.name, companyId: issuer ?? origin, issuer,
       authDisabled: auth.disabled === true, authMode: issuer ? auth.disabled === true ? 'disabled' : 'account' : 'no_as', metadata,
-      routes, scopes, metadataDigest: sha256Hex(JSON.stringify(sources)), sources, expiresAt: this.clock() + 300000, generation: 1 };
+      routes, scopes, metadataDigest: sha256Hex(JSON.stringify([discoveryOrigin,sources])), sources, expiresAt: this.clock() + 300000, generation: 1 };
   }
+}
+
+/** Bounded inline JSON schemas, including local $defs, are documentation rather than an execution permission. */
+function publicBodySchema(operation:JsonObject,budget:number):Pick<Route,'bodySchema'|'bodySchemaUnavailable'> {
+  if(operation.requestBody===undefined)return {};
+  try{
+    const body=object(operation.requestBody),content=object(body.content),json=object(content['application/json']),schema=json.schema;
+    requirePap(typeof schema==='boolean'||schema!==null&&typeof schema==='object'&&!Array.isArray(schema),'unsupported_profile');
+    const bytes=Buffer.byteLength(JSON.stringify(schema));requirePap(bytes<=32768&&bytes<=budget,'unsupported_profile');
+    let nodes=0;
+    const inspect=(value:unknown,depth=0):void=>{
+      requirePap(depth<=24&&++nodes<=4096,'unsupported_profile');
+      if(!value||typeof value!=='object')return;
+      if(Array.isArray(value)){for(const item of value)inspect(item,depth+1);return;}
+      const record=value as Record<string,unknown>;
+      if(record.$ref!==undefined)requirePap(typeof record.$ref==='string'&&record.$ref.startsWith('#/$defs/'),'unsupported_profile');
+      for(const child of Object.values(record))inspect(child,depth+1);
+    };
+    inspect(schema);return {bodySchema:schema};
+  }catch{return {bodySchemaUnavailable:true};}
 }

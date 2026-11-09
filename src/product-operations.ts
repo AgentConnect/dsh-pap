@@ -19,11 +19,16 @@ export function findOperation(state: PapState, reference: string): { company: Co
 }
 export function publicOperations(state: PapState, enabledOnly = false): object[] {
   const entries: object[] = [];
+  let schemaBytes=0;
   for (const company of Object.values(state.companies)) for (const route of company.routes) {
     if (!supported(company, route)) continue;
     const reference = operationRef(company, route); const approval = state.product?.operations[reference];
     if (enabledOnly && !approval) continue;
+    const bytes=route.bodySchema===undefined?0:Buffer.byteLength(JSON.stringify(route.bodySchema));
+    const includeSchema=route.bodySchema!==undefined&&bytes<=32768&&schemaBytes+bytes<=262144;
+    if(includeSchema)schemaBytes+=bytes;
     entries.push({ operationRef: reference, companyRef: company.ref, method: route.method, path: new URL(route.template).pathname.replace(/%7b/gi, '{').replace(/%7d/gi, '}'),
+      ...(route.operationId?{operationId:route.operationId}:{}),...(includeSchema?{bodySchema:route.bodySchema}:route.bodySchemaUnavailable||route.bodySchema!==undefined?{bodySchemaUnavailable:true}:{}),
       pathParameters: [...route.template.matchAll(/\{([A-Za-z0-9_.-]+)\}/g)].map(x => x[1]),
       queryParameters: (route.parameters ?? []).filter(x => x.in === 'query').map(x => ({ name: x.name, required: x.required })),
       enabled: Boolean(approval), account: approval ? Boolean(state.sessions[approval.sessionRef]?.accountSlot) : false,

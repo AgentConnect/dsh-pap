@@ -15,7 +15,7 @@ import { binding, FixtureHost, FixtureTransport, jsonResponse, secretKey, secret
 const fails=(code:string)=>(error:unknown)=>error instanceof PapError&&error.code===code;
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
 async function setup(t:test.TestContext, account=false, sameOrigin=false, clock?:()=>number){
-  const root=await mkdtemp(join(tmpdir(),'pap-cooldown-'));t.after(()=>rm(root,{recursive:true,force:true}));const host=new FixtureHost();const transport=new FixtureTransport();transport.mode=account?'account':'none';if(sameOrigin)transport.issuer='https://shop.example';
+  const root=await mkdtemp(join(tmpdir(),'pap-cooldown-'));t.after(()=>rm(root,{recursive:true,force:true}));const host=new FixtureHost(binding, clock);const transport=new FixtureTransport();transport.mode=account?'account':'none';if(sameOrigin)transport.issuer='https://shop.example';
   const options={binding,stateRoot:root,identityHost:host,secretStore:secrets,...(clock?{clock}:{}),callbackHandoff:{register:async()=>({callbackRef:'fixture-claim'}),collect:async()=>({})}};
   const client=new PapClient(options,transport);const company=await client.resolvePapCompany('shop.example');const subject=await client.getOrCreatePapUser(company.companyRef);const session=await client.openPapSession(subject.subjectRef);return {root,host,transport,options,client,...company,...subject,...session};
 }

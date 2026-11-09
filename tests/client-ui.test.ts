@@ -82,18 +82,19 @@ test('PAP settings: validated management hints are user links and unsafe hint sc
   const link=screen.getByRole('link',{name:'查看资源授权说明'});assert.equal(link.getAttribute('rel'),'noopener noreferrer');
   f.state.authenticationHints[0].resourceMetadataUrl='javascript:invalid';await act(()=>f.controller.refresh());assert(!screen.queryByRole('link',{name:'查看资源授权说明'}));assert.deepEqual(f.calls,[]);f.controller.dispose();
 });
-test('PAP client entry registers actual settings.section with only the user manager Remote contract',async()=>{
+test('PAP client entry keeps diagnostics but leaves shared settings ownership to Identity',async()=>{
   const f=world('disabled');const ctx=new Context();let contribution:any;let section:any;let component:any;let removed=0;let unmounted=0;
   ctx.provide('remote',{$mount:async(input:any)=>{contribution=input;return async()=>{unmounted++;};}});ctx.provide('remote.papManager',f.pap);ctx.provide('remote.anpIdentityManager',f.identities);
   ctx.provide('slots',{inject(_name:string,callback:()=>unknown){callback();return()=>{removed++;};},register(input:any,view:unknown){section=input;component=view;return()=>{};}});
-  const dispose=await applyClient(ctx);assert.equal(section.name,'settings.section');assert.equal(section.id,'pap-companies');assert.equal(component,PapSettings);assert.deepEqual(contribution.descriptors.map((value:any)=>value.method),['status','operations','manage']);
-  await dispose();assert.equal(removed,1);assert.equal(unmounted,1);await ctx.fiber.dispose();f.controller.dispose();
+  const dispose=await applyClient(ctx);assert.equal(section,undefined);assert.equal(component,undefined);assert.deepEqual(contribution.descriptors.map((value:any)=>value.method),['status','operations','manage']);
+  await dispose();assert.equal(removed,0);assert.equal(unmounted,1);await ctx.fiber.dispose();f.controller.dispose();
 });
 test('PAP browser artifact is a distinct module-loader client and contains no Host dependency graph',async()=>{
   const bytes=await readFile(new URL('../lib/browser-client.js',import.meta.url),'utf8');let loaded:any;
   runInNewContext(bytes,{window:{__ModuleLoader__:{load(value:unknown){loaded=value;}}}},{timeout:1000});
   assert.equal(loaded.id,'@awiki/dsh-pap');const module=loaded.factory((name:string)=>{if(name==='react')return ReactModule;if(name==='react/jsx-runtime')return JsxRuntime;throw new Error('Unexpected browser external');});
   assert.equal(typeof module.apply,'function');assert.equal(module.PapClient,undefined);
+  assert.equal(module.PapSettings,undefined);assert.equal(module.PapSettingsController,undefined);
   const inputs=JSON.parse(await readFile(new URL('../.artifacts/browser-inputs.json',import.meta.url),'utf8'));
   assert.equal(inputs.hostModulesIncluded,false);assert(!inputs.inputs.some((path:string)=>/src\/(plugin|store|keyring|credential-history|protocol-adapter|client)\.ts$/.test(path)));
   for(const name of ['NativeStore','getEncryptionKey','bindPapHostConsumer','DeviceAccess','credentialVault','node:fs'])assert(!bytes.includes(name));

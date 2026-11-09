@@ -10,6 +10,11 @@ export interface Route {
   parameters?: { name: string; in: 'path' | 'query'; required: boolean }[];
   /** Advertised extra requirements never become global read permission. */
   requiresConsent?: boolean;
+  /** Raw non-secret semantic declarations from the validated discovery document. */
+  policyEvidence?: {hasRequestBody:boolean;security?:unknown;declaredEffect?:unknown;annotations?:unknown};
+  operationId?: string;
+  bodySchema?: unknown;
+  bodySchemaUnavailable?: boolean;
 }
 export interface ProductOperationApproval { companyRef: string; method: string; template: string; resource: string; sessionRef: string; scopes: string[]; generation: number }
 export interface AsMetadata {
@@ -19,6 +24,8 @@ export interface AsMetadata {
   code_challenge_methods_supported?: string[];
 }
 export interface Company {
+  /** Initial HTTPS discovery origin, pinned through validated redirects; never inferred from a hostname suffix. */
+  discoveryOrigin?: string;
   ref: string; domain: string; name: string; companyId: string; issuer?: string; authDisabled: boolean;
   authMode: 'no_as' | 'account' | 'disabled'; metadata?: AsMetadata;
   routes: Route[]; scopes: string[]; metadataDigest: string; expiresAt: number; generation: number;
