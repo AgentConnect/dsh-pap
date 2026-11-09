@@ -178,7 +178,7 @@ npm run build
 npm pack --ignore-scripts --pack-destination .artifacts
 ```
 
-生产依赖固定 `proper-lockfile@4.1.2` 和 `zod@4.6.2`（严格管理 DTO）；JOSE 验证使用 Node crypto。Cordis 固定 `4.1.0`，可选 Host peer 为 typert/tools `0.2.2-rc.1`；依赖 integrity 在 package-lock.json 固定。C/A 的新 PAP API 尚未发布到 registry，因此本阶段依赖实际 Host capability 结构绑定，不能宣称已通过新 API 的 registry 安装验证或正式发行门槛。此阶段不将未发布本地源码写作正式 SDK lock 来源。
+生产依赖固定 `proper-lockfile@4.1.2` 和 `zod@4.6.2`（严格管理 DTO）；JOSE 验证使用 Node crypto。Cordis 固定 `4.1.0`，可选 Host peer 为 typert/tools `0.2.2-rc.1`；依赖 integrity 在 package-lock.json 固定。原生 SDK 依赖由 Identity Host 固定为 @agent-network-protocol/anp-identity@0.2.6；适配器继续通过实际 Host capability 结构绑定，并在缺少必需方法时失败关闭。
 
 `npm test` 是本仓库单位/隔离组件检查，不启动产品 E2E、System Test 或远程部署。`tests/fixture.ts` 的 in-memory ECDSA custody 仅供测试，和生产 C/A 路径分开。`tests/vectors/local-signer-v2.json` 来自 A 的真实本地 native 公有测试向量，独立 Node 验签；没有私钥。它证明 wire 兼容，不替代实际 C/A Host 接入。
 
@@ -274,14 +274,14 @@ binding, overwriting keys, or attempting an unauthenticated in-place migration.
 
 ## 域名自动连接与统一权限
 
-一次性启用 PAP 和 Host 全局域名接入后，只需 `pap_connect({domain})`，不再每个站点配置 Company 和许可。当前候选由 Identity 的共享“协议管理”替代旧 PAP 设置导航；浏览器入口也不再导出旧手工表单，但保留原加密连接、凭据与 Host 诊断接口，不迁移或删除用户数据。
+一次性启用 PAP 和 Host 全局域名接入后，只需 `pap_connect({domain})`，不再每个站点配置 Company 和许可。本版本由 Identity 的共享“协议管理”替代旧 PAP 设置导航；浏览器入口也不再导出旧手工表单，但保留原加密连接、凭据与 Host 诊断接口，不迁移或删除用户数据。
 
 发现记录保留最初域名及已验证的重定向绑定，刷新仍从该源开始。`pap_operations()` 返回 `effect`、`permission`（allow/ask/deny）、`requiresApproval`、`blocked`。每次业务请求都检查统一读写规则，已有只读启用记录不能绕过新禁止。允许直接执行，不重复确认，也不持久写入操作许可；询问自动弹出本次操作确认框；禁止或明确禁用不发送。账户 OAuth 登录及其 scope 仍独立管理。
 
-分类结合方法、请求正文与安全声明，以及可选的 `x-agent-effect`、`x-agent-annotations`；支持明确声明的 POST 只读查询。未知、明确支付及额外权限即使在全写允许时仍单独确认。需要匹配候选的 Identity Host API，缺少时失败关闭，不退回旧授权路径；正式依赖版本发布前再锁定。
+分类结合方法、请求正文与安全声明，以及可选的 `x-agent-effect`、`x-agent-annotations`；支持明确声明的 POST 只读查询。未知、明确支付及额外权限即使在全写允许时仍单独确认。需要 Identity 0.1.15 或更高版本的 Host API，缺少时失败关闭，不退回旧授权路径；本适配器 0.1.4 要求 Identity >=0.1.15。
 
 等待确认默认 120 秒，可用 `approvalWaitMs`、`approvalPollMs` 配置。超时后保留原授权对象，缓存绑定身份、Host 策略、统一策略版本和完整请求。取消、卸载、身份变化、既有拒绝、断开和撤权都会阻止后续执行；已批准或规则允许的变更操作也不因 Session、token 或 nonce 响应自动重放。
 
-失败结果的 `phase` 和 `businessRequest` 区分未开始业务传输、传输结果未知、已收到响应。已收到响应时保留 `httpStatus`，不能仅凭本地错误认定未发送，也不能把传输尝试当作已送达。不确定写入不得自动重试。当前候选已完成两站三协议真实读写，尚未发布 npm。
+失败结果的 `phase` 和 `businessRequest` 区分未开始业务传输、传输结果未知、已收到响应。已收到响应时保留 `httpStatus`，不能仅凭本地错误认定未发送，也不能把传输尝试当作已送达。不确定写入不得自动重试。本版本已完成两站三协议真实读写，版本组合为适配器 0.1.4 与 Identity 0.1.15。
 
-第三批 Identity 候选提供 `protocol_permissions`、`identity_settings`，让 Agent 在会话内确认后修改持续配置。新的显式 `pap_connect` 会采用已保存的默认身份及准入版本，不删除旧会话或凭据；在途请求仍受原引擎／身份边界约束。配置确认不等于业务请求审批，也不开放通用签名。
+Identity 0.1.15 提供 `protocol_permissions`、`identity_settings`，让 Agent 在会话内确认后修改持续配置。新的显式 `pap_connect` 会采用已保存的默认身份及准入版本，不删除旧会话或凭据；在途请求仍受原引擎／身份边界约束。配置确认不等于业务请求审批，也不开放通用签名。
