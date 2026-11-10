@@ -1,6 +1,8 @@
 # DSH PAP
 
-Domain automatic access and exact-operation confirmation require `@agent-network-protocol/dsh-anp-identity >=0.1.14` in the same Host. The identity peer is optional for library-only use, but the domain plugin must have the new Host consent API. The supported policy is automatic discovered reads plus owner-approved one-shot writes; there is no full-write or chat-controlled global write setting in this release.
+Version `0.1.5` repairs the explicitly selected Windows `local-file` backend and reports unsupported keyring platforms without silently falling back. State keys remain protected by owner-only DACLs, while identity/signing keys remain in native custody.
+
+Domain automatic access and exact-operation confirmation require `@agent-network-protocol/dsh-anp-identity >=0.1.15` in the same Host. The identity peer is optional for library-only use. Domain requests follow the shared read/write allow, ask and deny rules; persistent configuration changes require owner confirmation and never grant general signing access.
 
 **A PAP 0.3 client for DeepSeek Harness (DSH), powered by a reusable, locally held agent identity.**
 
