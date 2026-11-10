@@ -25,20 +25,26 @@ $p = $env:DSH_PAP_PROTECT_PATH
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $old = Get-Acl -LiteralPath $p
 if ($old.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'Unexpected owner' }
+$acl = $old
 if ($env:DSH_PAP_PROTECT_DIRECTORY -eq '1') {
-  $acl = New-Object System.Security.AccessControl.DirectorySecurity
   $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
 } else {
-  $acl = New-Object System.Security.AccessControl.FileSecurity
   $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')
 }
-$acl.SetOwner($sid)
 $acl.SetAccessRuleProtection($true, $false)
+foreach ($existing in @($acl.Access)) { $acl.RemoveAccessRuleSpecific($existing) }
 $acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $p -AclObject $acl
+if ($env:DSH_PAP_PROTECT_DIRECTORY -eq '1') {
+  [System.IO.Directory]::SetAccessControl($p, $acl)
+} else {
+  [System.IO.File]::SetAccessControl($p, $acl)
+}
 `;
+  const env: NodeJS.ProcessEnv = { ...process.env, DSH_PAP_PROTECT_PATH: path, DSH_PAP_PROTECT_DIRECTORY: directory ? '1' : '0' };
+  // Windows PowerShell must resolve its own modules instead of inheriting PowerShell 7 paths.
+  delete env.PSModulePath;
   await execute('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], {
-    env: { ...process.env, DSH_PAP_PROTECT_PATH: path, DSH_PAP_PROTECT_DIRECTORY: directory ? '1' : '0' },
+    env,
     timeout: 10000, windowsHide: true, maxBuffer: 4096,
   });
 }

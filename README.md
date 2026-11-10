@@ -99,6 +99,10 @@ Example Host plugin row:
 
 If the default keyring is unavailable, **explicitly** select file-backed key storage. The two directories must be distinct, non-overlapping absolute paths:
 
+The keyring adapter uses Linux Secret Service. Windows and macOS return `credential_backend_unsupported`; retries cannot make that backend work. In domain mode the Identity Host owns storage selection: set `domainAccess.secretStore: local-file` on the identity plugin. Setting only the PAP plugin's `secretStore` is ineffective in domain mode. This is an explicit Host storage choice, never an automatic fallback; identity private-key custody and shared write permissions remain independent.
+
+On Windows, file storage applies a DACL restricted to the current user. Its Windows PowerShell helper resolves the system module paths independently of an inherited PowerShell 7 `PSModulePath`; ACL failures still block key creation and never fall back to unprotected files.
+
 ```yaml
 - id: pap
   name: '@awiki/dsh-pap/plugin'

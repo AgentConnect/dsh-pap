@@ -19,7 +19,10 @@ export class PapStore {
       requirePap(material, 'credential_unavailable');
       const key = Buffer.from(material);
       requirePap(key.length === 32, 'credential_unavailable'); return key;
-    } catch { throw new PapError('credential_unavailable'); }
+    } catch (error) {
+      if (error instanceof PapError && error.code === 'credential_backend_unsupported') throw error;
+      throw new PapError('credential_unavailable');
+    }
   }
   async transaction<T>(fn: (state: PapState) => T | Promise<T>): Promise<T> {
     await mkdir(this.root, { recursive: true, mode: 0o700 });

@@ -22,7 +22,7 @@ export function apply(ctx: Context): void {
   const register = (tool: ToolDefinition) => { const dispose = registry.register(tool); if (typeof dispose === 'function') ctx.effect(() => () => { dispose(); }); };
   const empty = { type: 'object', properties: {}, additionalProperties: false };
   const agent = (execution: { agent?: unknown; signal?: AbortSignal }) => requirePap(execution.agent && !execution.signal?.aborted, 'permission_denied');
-  register({ name: 'pap_connect', description: '输入域名自动发现 PAP Company、使用 Host 默认公共身份、复用或建立 Session，返回可用只读操作。无需逐域名配置；不扩大已有权限规则，也不自动登录账户。domain_access_disabled 表示只需一次性启用全局域名接入，default_identity_required 表示需要选择一次默认身份。',
+  register({ name: 'pap_connect', description: '输入域名自动发现 PAP Company、使用 Host 默认公共身份、复用或建立 Session，返回可用只读操作。无需逐域名配置；不扩大已有权限规则，也不自动登录账户。domain_access_disabled 需要 Host 配置全局域名接入（协议管理没有该开关），default_identity_required 需要选择默认身份。credential_backend_unsupported 表示 keyring 仅支持 Linux；Windows/macOS 须由 Host 显式配置 domainAccess.secretStore: local-file，不会自动回退，也不要改写入权限。',
     parameters: { type: 'object', properties: { domain: { type: 'string', minLength: 1, maxLength: 253 } }, required: ['domain'], additionalProperties: false }, output,
     execute: async (args, execution) => { agent(execution); requirePap(args && typeof args === 'object' && Object.keys(args).length === 1 && 'domain' in args && typeof args.domain === 'string', 'unsafe_destination'); return facade.connect(args.domain); } });
   register({ name: 'pap_status', description: 'PAP 状态入口：读取已配置身份、Company、连接和登录状态。首次使用先看状态；没有公共身份请用 identity_status / identity_request_creation。访问新域名先调用 pap_connect；disabled/not_configured 检查一次性全局接入设置，不要查私钥或其他 CLI。示例 https://agent-network-protocol.com supports MCP, ANP and PAP；用途为访问 ANP 社区官网。', parameters: empty, output,
