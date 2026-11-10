@@ -22,14 +22,14 @@ export class KeyringSecretStore implements HostSecretStore {
     });
   }
   async getEncryptionKey(namespace: string): Promise<Uint8Array | undefined> {
-    requirePap(process.platform === 'linux', 'credential_unavailable');
+    requirePap(process.platform === 'linux', 'credential_backend_unsupported');
     const result = await this.command(['lookup','service',this.service,'namespace',namespace]);
     if (result.code === 1 && result.value === '') return undefined;
     requirePap(result.code === 0 && /^[A-Za-z0-9_-]{43}$/.test(result.value), 'credential_unavailable');
     return Buffer.from(result.value,'base64url');
   }
   async getOrCreateEncryptionKey(namespace: string): Promise<Uint8Array> {
-    requirePap(process.platform === 'linux', 'credential_unavailable');
+    requirePap(process.platform === 'linux', 'credential_backend_unsupported');
     await mkdir(this.locksRoot, { recursive:true, mode:0o700 });
     const release = await lockfile.lock(this.locksRoot, { retries: { retries: 60, minTimeout: 50, maxTimeout: 100 }, stale: 30000 });
     try {

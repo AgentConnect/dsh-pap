@@ -67,6 +67,8 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   let consentDecision = {id:'fixture-consent',status:'pending',version:1,grantId:undefined as string|undefined,mode:undefined as string|undefined};
   let consentBindings = 0;
   let consentRequests = 0, consentExecutions = 0, consentCancels = 0, consentActive = true;
+  let signalConsentRequested!: () => void;
+  const consentRequested = new Promise<void>(resolve => { signalConsentRequested = resolve; });
   let consentRequest: Request | undefined;
   let expectedRequest: string | undefined;
   let policyVersion=0;
@@ -95,6 +97,7 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
       assert(input.purpose.startsWith('PAP exact operation'));
       assert(!input.request.headers.has('poppy-session') && !input.request.headers.has('authorization') && !input.request.headers.has('dpop'));
       consentRequests++; consentRequest=input.request.clone(); expectedRequest=await requestFingerprint(input.request);
+      signalConsentRequested();
       return {...consentDecision};
     },
     async status(id: string) {assert.equal(id,consentDecision.id);return {...consentDecision};},
@@ -146,7 +149,7 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   t.after(async () => { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }); await rm(root + '-keys', { recursive: true, force: true }); });
   return { root, ctx, loader, host, transport,
     policy:{set(effect:PolicyClassification['effect'],decision:'allow'|'ask'|'deny'){decisions[effect]=decision;policyVersion++;}},
-    consent: {approve(mode='once') {consentDecision={...consentDecision,status:'approved',grantId:'once-grant',mode};},deny(){consentDecision.status='denied';},revoke(){consentActive=false;},get bindings(){return consentBindings;},get requests(){return consentRequests;},get executions(){return consentExecutions;},get cancels(){return consentCancels;},get status(){return consentDecision.status;},get request(){return consentRequest;}},
+    consent: {requested:consentRequested,approve(mode='once') {consentDecision={...consentDecision,status:'approved',grantId:'once-grant',mode};},deny(){consentDecision.status='denied';},revoke(){consentActive=false;},get bindings(){return consentBindings;},get requests(){return consentRequests;},get executions(){return consentExecutions;},get cancels(){return consentCancels;},get status(){return consentDecision.status;},get request(){return consentRequest;}},
     changeDefaultEpoch() { domainPolicyRef += '-next'; },
     disableDomain() { domainEnabled = false; }, service, manager, execute, tools, contexts, namespaces, config, select: async () => manager.manage({ action: 'identity/select', reference: binding.identityRef }),
     setResponse(value: typeof response) { response = value; }, advanceProvider() { providerGeneration++; },
@@ -479,7 +482,12 @@ async function domainWrite(f: Awaited<ReturnType<typeof fixture>>, requiresAppro
   return write;
 }
 async function untilConsent(f: Awaited<ReturnType<typeof fixture>>) {
-  for(let index=0;index<100&&!f.consent.requests;index++)await new Promise(resolve=>setTimeout(resolve,5));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([f.consent.requested, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('PAP consent request did not arrive')), 30000);
+    })]);
+  } finally { clearTimeout(timer); }
   assert.equal(f.consent.requests,1);
 }
 test('PAP domain consent: an advertised write waits for one exact owner grant without enabling its route', async t=>{

@@ -1,6 +1,8 @@
 # DSH PAP：DeepSeek Harness 的 PAP 0.3 客户端
 
-域名自动接入和单次操作确认需要同一 Host 中的 `@agent-network-protocol/dsh-anp-identity >=0.1.14`。该 peer 对纯库用途是可选依赖，但域名插件必须具备新版 Host 授权接口。本版仅提供“已发现只读自动访问、写操作由用户批准一次”的模式，不包含全量写权限或聊天切换全局写模式的设置。
+`0.1.5` 修复显式选用的 Windows `local-file` 后端，并在 keyring 平台不受支持时明确报错，不静默降级。状态密钥仍受仅当前所有者可访问的 DACL 保护，身份与签名密钥仍由 Native 保管。
+
+域名自动接入和单次操作确认需要同一 Host 中的 `@agent-network-protocol/dsh-anp-identity >=0.1.15`。该 peer 对纯库用途是可选依赖。域名请求遵守共享的读写允许、询问与禁止规则；持续配置变更需要所有者确认，不开放通用签名权限。
 
 [English](README.md) | 简体中文
 

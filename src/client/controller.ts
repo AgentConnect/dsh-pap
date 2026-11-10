@@ -18,6 +18,7 @@ export interface SettingsView {
 }
 const messages:Record<string,string> = {
   credential_history_incomplete:'旧账户凭据历史不完整。请先处理原账户并由受信管理核验，不能继续提供给 Agent。',
+  credential_backend_unsupported:'当前 keyring 后端仅支持 Linux。请由 Host 明确选择 local-file 后端；域名模式须在身份 Host 的 domainAccess.secretStore 中配置，不会自动切换存储。',
   not_configured:'请先在 Host 配置中启用 PAP，并指定已批准的身份政策。',credential_unavailable:'受保护凭据暂不可用，请检查系统秘密存储后重试。',
   permission_denied:'当前操作未获允许，请检查身份、连接与权限。',consumer_forbidden:'PAP 身份许可暂不可用。',provider_disposed:'身份服务已更新，请重新选择身份。',
   not_published:'请先在身份设置中完成注册和发布。',unsupported_sign_in:'此 Company 当前不支持发起账户登录。',insufficient_scope:'请选择此 Company 提供的账户权限。',

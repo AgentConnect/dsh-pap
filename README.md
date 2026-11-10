@@ -1,6 +1,8 @@
 # DSH PAP
 
-Domain automatic access and exact-operation confirmation require `@agent-network-protocol/dsh-anp-identity >=0.1.14` in the same Host. The identity peer is optional for library-only use, but the domain plugin must have the new Host consent API. The supported policy is automatic discovered reads plus owner-approved one-shot writes; there is no full-write or chat-controlled global write setting in this release.
+Version `0.1.5` repairs the explicitly selected Windows `local-file` backend and reports unsupported keyring platforms without silently falling back. State keys remain protected by owner-only DACLs, while identity/signing keys remain in native custody.
+
+Domain automatic access and exact-operation confirmation require `@agent-network-protocol/dsh-anp-identity >=0.1.15` in the same Host. The identity peer is optional for library-only use. Domain requests follow the shared read/write allow, ask and deny rules; persistent configuration changes require owner confirmation and never grant general signing access.
 
 **A PAP 0.3 client for DeepSeek Harness (DSH), powered by a reusable, locally held agent identity.**
 
@@ -98,6 +100,10 @@ Example Host plugin row:
 ```
 
 If the default keyring is unavailable, **explicitly** select file-backed key storage. The two directories must be distinct, non-overlapping absolute paths:
+
+The keyring adapter uses Linux Secret Service. Windows and macOS return `credential_backend_unsupported`; retries cannot make that backend work. In domain mode the Identity Host owns storage selection: set `domainAccess.secretStore: local-file` on the identity plugin. Setting only the PAP plugin's `secretStore` is ineffective in domain mode. This is an explicit Host storage choice, never an automatic fallback; identity private-key custody and shared write permissions remain independent.
+
+On Windows, file storage applies a DACL restricted to the current user. Its Windows PowerShell helper resolves the system module paths independently of an inherited PowerShell 7 `PSModulePath`; ACL failures still block key creation and never fall back to unprotected files.
 
 ```yaml
 - id: pap
