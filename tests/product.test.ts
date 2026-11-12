@@ -23,7 +23,7 @@ function value(result: ProductResult): Value { assert.equal(result.ok, true, res
 function error(result: ProductResult, code: string) { assert.equal(result.ok,false); if(result.ok)throw new Error('Expected refusal'); assert.equal(result.error.code,code); assert(Object.keys(result.error).every(key=>['code','phase','businessRequest','httpStatus','retryAfterSeconds','approval'].includes(key))); }
 
 /** Unit C boundary with real fixture cryptography. This is not evidence for the C factory. */
-async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?: FixtureTransport['mode']; missingConfig?: boolean; blockedSecrets?: boolean; missingFactory?: boolean; autoConnect?: boolean; approvalWaitMs?: number } = {}) {
+async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?: FixtureTransport['mode']; missingConfig?: boolean; blockedSecrets?: boolean; missingFactory?: boolean; autoConnect?: boolean; approvalWaitMs?: number; businessConsumers?: string[] } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'pap-product-unit-'));
   const ctx = new Context(); const host = new FixtureHost(); const transport = new FixtureTransport(); transport.mode = options.mode ?? 'none';
   const tools = new Map<string, any>(); const targetRefs = new WeakSet<object>(); const contexts: Context[] = []; const namespaces: string[] = []; let providerGeneration = 1; let registerCount = 0; let claimCount = 0; let disposedCallbacks = 0; let response: { state: string; iss: string; code: string } | undefined;
@@ -136,10 +136,11 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   ctx.provide('tools', { register(definition: any) { tools.set(definition.name, definition); } });
   ctx.provide('typert', { register() { return () => {}; } });
   await ctx.plugin(Loader, {}); const loader = ctx.get('loader') as Loader;
-  const modules: Record<string, unknown> = { [PAP_CONSUMER]: plugin, [PAP_MANAGER]: ManagerRemote, [PAP_TOOLS]: toolPlugin };
+  const modules: Record<string, unknown> = { [PAP_CONSUMER]: plugin, [PAP_MANAGER]: ManagerRemote, [PAP_TOOLS]: toolPlugin, "example/shop": { apply() {} } };
   loader.import = async name => { assert(Object.hasOwn(modules, name)); return modules[name]; };
   const config = options.autoConnect ? { enabled: true, autoConnect: true, approvalWaitMs: options.approvalWaitMs ?? 2000, approvalPollMs: 10 } : options.missingConfig ? { enabled: true } : { enabled: options.enabled ?? true, stateRoot: root, policyRef: 'host-approved', keyringService: 'pap-isolated-unit-never-created' };
-  await loader.create({ name: PAP_CONSUMER, config });
+  await loader.create({ name: PAP_CONSUMER, config: {...config,businessConsumers:options.businessConsumers ?? []} });
+  if (options.businessConsumers) await loader.create({name:"example/shop"});
   await loader.create({ name: PAP_MANAGER }); await loader.create({ name: PAP_TOOLS }); await loader.await();
   const service = ctx.pap; const manager = ctx.get('papManager') as unknown as InstanceType<typeof ManagerRemote>;
   const execute = async (name: string, args: unknown = {}, signal = new AbortController().signal) => tools.get(name).execute(args, { agent: {}, signal });
@@ -670,4 +671,47 @@ test('domain reconnect adopts a changed default epoch without letting old reques
   value(await f.execute('pap_connect', { domain: 'shop.example' }));
   const refreshed = value(await f.execute('pap_operations')) as unknown as Value[];
   value(await f.execute('pap_request', { operationRef: refreshed.find(operation => operation.method === 'GET')!.operationRef }));
+});
+
+
+test('PAP business: exact installed consumer only, bounded data and live revocation', async t => {
+  const f = await fixture(t, {autoConnect:true,businessConsumers:['example/shop']});
+  assert.throws(()=>f.service.acquireBusiness(f.ctx),PapError);
+  const manager=[...f.loader.entries()].find(item=>item.options.name===PAP_MANAGER)!;
+  assert.throws(()=>f.service.acquireBusiness(manager.fiber!.ctx),PapError);
+  const entry=[...f.loader.entries()].find(item=>item.options.name==='example/shop')!;
+  const business=f.service.acquireBusiness(entry.fiber!.ctx);
+  value(await business.connect('shop.example'));
+  const status=value(await business.status());assert.equal(status.companies[0].domain,'shop.example');assert.equal(status.companies[0].companyId,'https://shop.example');
+  assert(!JSON.stringify(value(await f.execute('pap_status'))).includes('https://'));
+  const operations=value(await business.operations()) as unknown as Value[];
+  const read=operations.find(op=>op.method==='GET'&&op.path==='/api/cart')!;assert(read);
+  const data='x'.repeat(70000);
+  f.transport.override=url=>url.endsWith('/api/cart')?Promise.resolve(jsonResponse(url,{description:data,access_token:'secret'})):undefined;
+  const received=value(await business.request({operationRef:read.operationRef}));
+  assert.equal(received.body.description,data);assert.equal(received.body.access_token,'[redacted]');
+  const tool=value(await f.execute('pap_request',{operationRef:read.operationRef}));assert.equal(tool.bodyAvailable,false);
+  await f.loader.update(entry.id,{disabled:true});
+  const before=f.transport.calls.length;
+  error(await business.request({operationRef:read.operationRef}),'permission_denied');
+  assert.equal(f.transport.calls.length,before);
+});
+
+test('PAP business: an installed plugin without Host opt-in has no facade',async t=>{
+  const f=await fixture(t,{businessConsumers:[]});
+  const entry=[...f.loader.entries()].find(item=>item.options.name==='example/shop')!;
+  assert.throws(()=>f.service.acquireBusiness(entry.fiber!.ctx),PapError);
+});
+
+test('PAP business: writes wait for the existing once-approval and send only once',async t=>{
+  const f=await fixture(t,{autoConnect:true,businessConsumers:['example/shop']});
+  const entry=[...f.loader.entries()].find(item=>item.options.name==='example/shop')!;
+  const business=f.service.acquireBusiness(entry.fiber!.ctx);
+  const write=await domainWrite(f);
+  const pending=business.request({operationRef:write.operationRef,body:{quantity:1}});
+  await untilConsent(f);
+  assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')&&call.options?.method==='POST').length,0);
+  f.consent.approve();assert.equal(value(await pending).status,200);
+  assert.equal(f.consent.executions,1);
+  assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')&&call.options?.method==='POST').length,1);
 });

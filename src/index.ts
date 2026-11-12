@@ -13,7 +13,7 @@ export { DeviceCallbackHandoff } from './callback-handoff.js';
 export type { DeviceManagementOperations, CallbackManagementOperation, CallbackRegistration, CallbackClaim, CallbackRegistrationResult, CallbackClaimResult, RegisterCallbackOperation, ClaimCallbackOperation } from './callback-handoff.js';
 export { PapService } from './plugin.js';
 export type { PapPluginConfig, PapHostServices } from './plugin.js';
-export type { PapHostConsumer, PapManagementRequest, PapOperationRequest, ProductResult } from './product-api.js';
+export type { PapHostConsumer, PapManagementRequest, PapOperationRequest, PapOperationsClient, ProductResult } from './product-api.js';
 export { FileSecretStore } from './file-secrets.js';
 export { KeyringSecretStore } from './keyring.js';
 /** Root Loader row declares the browser client; the capability-owning service is ./plugin. */

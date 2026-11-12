@@ -19,6 +19,8 @@ import { PapConsentPending, waitForConsent, type DomainOperationConsumer, type C
 import { PapPolicyTargets, classifyRoute, type PolicyHost, type PolicyAdmission } from './protocol-policy.js';
 
 export interface PapPluginConfig {
+  /** Exact installed package names approved by the Host for business UI integration. */
+  businessConsumers?: readonly string[];
   /** Explicit opt-in; loading an unconfigured bundle performs no discovery or signing. */
   enabled?: boolean;
   /** Host-approved domain mode; connects signed-out read operations without per-domain settings. */
@@ -180,7 +182,7 @@ export class PapService extends Service {
         register: async input => { const driver = await management(input.transactionId); try { return await new DeviceCallbackHandoff(driver).register(input); } finally { driver.dispose(); } },
         collect: async callbackRef => { const driver = await management(undefined, callbackRef); try { return await new DeviceCallbackHandoff(driver).collect(callbackRef); } finally { driver.dispose(); } },
       };
-      next = new PapClient({ stateRoot: join(this.config.stateRoot!, `identity-${sha256(JSON.stringify(binding))}`), binding, identityHost: protocolHost, secretStore: secrets, callbackHandoff: handoff, observeCredentials: credentials => this.credentialHistory.observe(credentials) }, host?.transport ?? new SafeHttpsTransport());
+      next = new PapClient({ stateRoot: join(this.config.stateRoot!, `identity-${sha256(JSON.stringify(binding))}`), binding, identityHost: protocolHost, secretStore: secrets, callbackHandoff: handoff, observeCredentials: credentials => this.credentialHistory.observe(credentials) }, host?.transport ?? new SafeHttpsTransport({maxBytes:this.config.businessConsumers?.length ? 8*1024*1024 : 1024*1024}));
       await next.recover(); await consumer.assertActive(); requirePap(!this.stopped, 'disconnected');
       if (persist) await this.persistSelection(reference);
       await consumer.assertActive(); requirePap(!this.stopped, 'disconnected');
@@ -247,10 +249,15 @@ export class PapService extends Service {
   }
   async start(): Promise<void> { await this.ready; }
   stop(): void { if (this.stopped) return; this.stopped = true; this.consentController.abort(); this.policyTargets?.dispose(); this.client?.close(); this.hostConsumer?.dispose(); this.credentialHistory.dispose(); }
-  async getStatus(includeManagementHints = false): Promise<object> {
+  async getStatus(includeManagementHints = false, businessMetadata = false): Promise<object> {
     await this.ready;
     requirePap(!this.stopped, 'disconnected');
     if (this.config.enabled !== true) return { state: 'disabled' };
+    if (this.config.autoConnect && this.selected) {
+      const host=this.installedContext.get('anpIdentity') as {resolveDomainAccess(context:Context,profile:'pap_session'):Promise<{identityRef:IdentityRef;policyRef:string}>};
+      const current=await host.resolveDomainAccess(this.installedContext,'pap_session');
+      requirePap(JSON.stringify(current.identityRef)===JSON.stringify(this.selected)&&current.policyRef===this.config.policyRef,'permission_denied');
+    }
     if (!this.client) return { state: this.lastError === 'credential_unavailable' ? 'credential_unavailable' : 'unconfigured', ...(this.lastError ? { error: this.lastError } : {}) };
     const engine = this.client; await (await this.consumer()).assertActive();
     const state = await engine.store.read();
@@ -263,7 +270,7 @@ export class PapService extends Service {
     return this.publicValue(state,{ state: 'ready', identity: this.selected, supportedSignIn: ['direct'],
       ...(includeManagementHints ? { authenticationHints: [...this.authHints].map(([operationRef, hint]) => ({ operationRef, ...hint })),
         pendingSignIns: Object.values(state.transactions).filter(value => value.status === 'pending' && value.expiresAt > Date.now()).map(value => ({ transactionRef:value.ref, accountSlot:value.accountSlot, ...(state.subjects[value.subjectRef]?{companyRef:state.subjects[value.subjectRef]!.companyRef}:{}), expiresAt:value.expiresAt })) } : {}),
-      companies: Object.values(state.companies).map(value => ({ companyRef: value.ref, name: value.name, authMode: value.authMode, scopes: value.scopes })),
+      companies: Object.values(state.companies).map(value => ({ companyRef: value.ref, ...(businessMetadata?{domain:value.domain,companyId:value.companyId}:{}), name: value.name, authMode: value.authMode, scopes: value.scopes })),
       sessions: Object.values(state.sessions).map(value => ({ sessionRef: value.ref, ...(state.subjects[value.subjectRef] ? { companyRef: state.subjects[value.subjectRef]!.companyRef } : {}), connected: value.connected, account: Boolean(value.accountSlot), ...(value.accountSlot ? { accountSlot: value.accountSlot } : {}) })),
       accounts: Object.values(state.grants).map(value => ({ accountSlot: value.accountSlot, ...(state.subjects[value.subjectRef] ? { companyRef:state.subjects[value.subjectRef]!.companyRef } : {}), status: value.status, scopes: value.scope,canRefresh:value.status==='active'&&Boolean(value.refreshToken) })),
     }) as object;
@@ -288,16 +295,32 @@ export class PapService extends Service {
     });
   }
   /** Agent capability contains only approved local operation references. */
-  acquireTools(context: Context): { requestTimeoutMs: number; connect(domain: string): Promise<ProductResult>; status(): Promise<ProductResult>; operations(): Promise<ProductResult>; request(input: unknown, signal?: AbortSignal): Promise<ProductResult> } {
-    this.assertInstalled(context, PAP_TOOLS); const check = () => this.assertInstalled(context, PAP_TOOLS);
-    return Object.freeze({
+  acquireTools(context: Context): import('./product-api.js').PapOperationsClient {
+    return this.operationsFor(context, PAP_TOOLS, false);
+  }
+  /** Business cards share the same identity, policy and once-approval dispatch as tools. */
+  acquireBusiness(context: Context): import('./product-api.js').PapOperationsClient {
+    for (const name of this.config.businessConsumers ?? []) {
+      if ([PAP_CONSUMER,PAP_MANAGER,PAP_TOOLS].includes(name)) continue;
+      try { this.assertInstalled(context,name); } catch { continue; }
+      return this.operationsFor(context,name,true);
+    }
+    throw new PapError('permission_denied');
+  }
+  private operationsFor(context: Context, consumer: string, business: boolean): import('./product-api.js').PapOperationsClient {
+    const check = () => {
+      this.assertInstalled(context, consumer);
+      if (business) requirePap(this.config.businessConsumers?.includes(consumer), 'permission_denied');
+    };
+    check();
+    return Object.freeze<import('./product-api.js').PapOperationsClient>({
       requestTimeoutMs: this.approvalWaitMs + 30000,
       connect: domain => this.runPublic(() => {
         const run = this.domainFlight.then(() => this.connectDomain(domain, check));
         this.domainFlight = run.catch(() => undefined);
         return run;
       }),
-      status: () => this.runPublic(async () => { check(); const result = await this.getStatus(); check(); return result; }),
+      status: () => this.runPublic(async () => { check(); const result = await this.getStatus(false,business); check(); return result; }),
       operations: () => this.runPublic(() => this.catalog(!this.config.autoConnect, check)),
       request: async (input, signal) => {
         const trace: PapRequestTrace = {phase:'prepare',businessRequest:'not_sent'};
@@ -352,7 +375,7 @@ export class PapService extends Service {
           this.credentialHistory.restore(current);
           const secrets = [...sentSecrets, ...privateValues(current), ...this.credentialHistory.values()];
           checkRequest(); await (await this.consumer()).assertActive(); checkRequest();
-          this.authHints.delete(parsed.data.operationRef); return publicResponse(response, secrets);
+          this.authHints.delete(parsed.data.operationRef); return publicResponse(response, secrets, business ? 8*1024*1024 : 65536);
         } catch (error) {
           if (this.client === engine && !this.changing && error instanceof PapError && error.authHint) {
             if (this.authHints.size >= 32) this.authHints.delete(this.authHints.keys().next().value!);

@@ -285,3 +285,15 @@ binding, overwriting keys, or attempting an unauthenticated in-place migration.
 失败结果的 `phase` 和 `businessRequest` 区分未开始业务传输、传输结果未知、已收到响应。已收到响应时保留 `httpStatus`，不能仅凭本地错误认定未发送，也不能把传输尝试当作已送达。不确定写入不得自动重试。本版本已完成两站三协议真实读写，版本组合为适配器 0.1.4 与 Identity 0.1.15。
 
 Identity 0.1.15 提供 `protocol_permissions`、`identity_settings`，让 Agent 在会话内确认后修改持续配置。新的显式 `pap_connect` 会采用已保存的默认身份及准入版本，不删除旧会话或凭据；在途请求仍受原引擎／身份边界约束。配置确认不等于业务请求审批，也不开放通用签名。
+
+## 业务卡片接入（本地候选，尚未发布）
+
+Host 可以在 PAP 插件配置中显式设置 `businessConsumers: ['dsh-frontvia-customer']`。
+获准的真实已安装插件使用 `ctx.pap.acquireBusiness(ctx)`，取得 `connect(domain)`、
+`status()`、`operations()` 和 `request({operationRef, path?, query?, body?})`。
+这些调用复用工具路径的发现、默认身份、撤权检查、统一权限和一次操作批准；
+不能读取 Token、签名句柄，不能提交任意 URL。未批准或已卸载的插件无法继续调用。
+
+该受限入口提供最多 8 MiB 的脱敏业务 JSON，供卡片渲染；普通模型工具继续使用
+64 KiB 投影。业务 `status()` 可取得已验证的 domain/companyId 以恢复卡片连接；模型工具的状态投影仍只给出非传输引用。网络响应仍受固定上限约束，不另建数据传输通道。
+这项增量位于 Frontvia Space，未包含在 npm `0.1.4` 中，发布前须使用本地构建依赖。

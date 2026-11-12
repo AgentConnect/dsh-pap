@@ -42,3 +42,12 @@ export interface PapRequestTrace {
   httpStatus?: number;
 }
 export type ProductResult = { ok: true; value: unknown } | { ok: false; error: Partial<PapRequestTrace> & { code: string; retryAfterSeconds?: number | string; approval?: { requestId: string; presentation: 'dialog'; status: 'pending' } } };
+
+/** Installed consumers receive operations, never protocol credentials or signing handles. */
+export interface PapOperationsClient {
+  readonly requestTimeoutMs: number;
+  connect(domain: string): Promise<ProductResult>;
+  status(): Promise<ProductResult>;
+  operations(): Promise<ProductResult>;
+  request(input: unknown, signal?: AbortSignal): Promise<ProductResult>;
+}

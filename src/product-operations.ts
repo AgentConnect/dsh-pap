@@ -97,9 +97,10 @@ function redact(value: unknown, secrets: readonly string[], depth = 0): unknown 
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [sensitive(key) ? '[redacted]' : key, privateFields.test(key) ? '[redacted]' : redact(item, secrets, depth + 1)]));
   return value;
 }
-export function publicResponse(response: HttpResponse, secrets: readonly string[] = []): object {
+export function publicResponse(response: HttpResponse, secrets: readonly string[] = [], maxBytes = 65536): object {
+  requirePap(Number.isSafeInteger(maxBytes) && maxBytes >= 65536 && maxBytes <= 8*1024*1024, 'unsupported_profile');
   const type = response.headers['content-type']?.split(';')[0]?.trim().toLowerCase();
   if (type !== 'application/json' && type !== 'application/problem+json') return { status: response.status, bodyAvailable: false };
-  try { return { status: response.status, body: redact(strictJson(response.body, 65536), secrets) }; }
+  try { return { status: response.status, body: redact(strictJson(response.body, maxBytes), secrets) }; }
   catch { return { status: response.status, bodyAvailable: false }; }
 }
