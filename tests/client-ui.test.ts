@@ -9,6 +9,7 @@ import * as ReactModule from 'react';
 import * as JsxRuntime from 'react/jsx-runtime';
 import { PapSettingsController,identityKey } from '../src/client/controller.js';
 import { PapSettings } from '../src/client/views.js';
+import { PapConnections } from '../src/client/connections.js';
 import { apply as applyClient } from '../src/client/index.js';
 const dom=new JSDOM('<!doctype html><html><body></body></html>',{url:'https://app.test'});
 for(const name of ['window','document','HTMLElement','HTMLInputElement','Event','MouseEvent','Node','MutationObserver','navigator'])Object.defineProperty(globalThis,name,{value:(dom.window as any)[name],configurable:true});
@@ -82,12 +83,12 @@ test('PAP settings: validated management hints are user links and unsafe hint sc
   const link=screen.getByRole('link',{name:'查看资源授权说明'});assert.equal(link.getAttribute('rel'),'noopener noreferrer');
   f.state.authenticationHints[0].resourceMetadataUrl='javascript:invalid';await act(()=>f.controller.refresh());assert(!screen.queryByRole('link',{name:'查看资源授权说明'}));assert.deepEqual(f.calls,[]);f.controller.dispose();
 });
-test('PAP client entry keeps diagnostics but leaves shared settings ownership to Identity',async()=>{
+test('PAP client entry mounts connection lifecycle without duplicating shared permissions',async()=>{
   const f=world('disabled');const ctx=new Context();let contribution:any;let section:any;let component:any;let removed=0;let unmounted=0;
   ctx.provide('remote',{$mount:async(input:any)=>{contribution=input;return async()=>{unmounted++;};}});ctx.provide('remote.papManager',f.pap);ctx.provide('remote.anpIdentityManager',f.identities);
   ctx.provide('slots',{inject(_name:string,callback:()=>unknown){callback();return()=>{removed++;};},register(input:any,view:unknown){section=input;component=view;return()=>{};}});
-  const dispose=await applyClient(ctx);assert.equal(section,undefined);assert.equal(component,undefined);assert.deepEqual(contribution.descriptors.map((value:any)=>value.method),['status','operations','manage']);
-  await dispose();assert.equal(removed,0);assert.equal(unmounted,1);await ctx.fiber.dispose();f.controller.dispose();
+  const dispose=await applyClient(ctx);assert.equal(section.id,'pap-connections');assert.equal(component,PapConnections);assert.deepEqual(contribution.descriptors.map((value:any)=>value.method),['status','operations','manage']);
+  await dispose();assert.equal(removed,1);assert.equal(unmounted,1);await ctx.fiber.dispose();f.controller.dispose();
 });
 test('PAP browser artifact is a distinct module-loader client and contains no Host dependency graph',async()=>{
   const bytes=await readFile(new URL('../lib/browser-client.js',import.meta.url),'utf8');let loaded:any;
@@ -142,4 +143,18 @@ test('PAP settings: the community example is visible and fills only the Company 
   await click('填入示例域名');
   assert.equal((screen.getByLabelText('Company 域名')as HTMLInputElement).value,'agent-network-protocol.com');
   assert.deepEqual(f.calls,[]);f.controller.dispose();
+});
+
+
+test('PAP connections require explicit user disconnect and reconnect, preserving account binding',async()=>{
+  const f=world('ready');f.state.companies=[{companyRef:'cmp1',name:'Demo',authMode:'account',scopes:[]}];
+  f.state.sessions=[{sessionRef:'account-only',companyRef:'cmp1',connected:true,account:true,accountSlot:'account-user'}];
+  render(createElement(PapConnections,{controller:f.controller}));await act(()=>f.controller.refresh());
+  assert.deepEqual(f.calls,[]);
+  fireEvent.click(screen.getByRole('button',{name:'断开连接'}));
+  await waitFor(()=>assert.equal((screen.getByRole('button',{name:'重新连接'}) as HTMLButtonElement).disabled,false));
+  assert.deepEqual(f.calls,[{action:'session/disconnect',sessionRef:'account-only'}]);
+  fireEvent.click(screen.getByRole('button',{name:'重新连接'}));
+  await waitFor(()=>assert.equal(f.calls.length,2));
+  assert.deepEqual(f.calls[1],{action:'session/connect',companyRef:'cmp1',accountSlot:'account-user'});f.controller.dispose();
 });

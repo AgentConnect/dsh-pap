@@ -715,3 +715,18 @@ test('PAP business: writes wait for the existing once-approval and send only onc
   assert.equal(f.consent.executions,1);
   assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')&&call.options?.method==='POST').length,1);
 });
+
+
+test('PAP user status restores domain state locally without connecting or sending',async t=>{
+  const f=await fixture(t,{autoConnect:true});
+  assert.equal(value(await f.manager.status()).state,'ready');
+  assert.deepEqual(value(await f.manager.status()).sessions,[]);
+  assert.equal(f.transport.calls.length,0);
+  value(await f.execute('pap_connect',{domain:'shop.example'}));
+  const before=value(await f.manager.status());
+  value(await f.manager.manage({action:'session/disconnect',sessionRef:before.sessions[0].sessionRef}));
+  const calls=f.transport.calls.length;
+  const view=value(await f.manager.status());
+  assert.equal(view.sessions[0].connected,false);
+  assert.equal(f.transport.calls.length,calls);
+});
