@@ -46,7 +46,10 @@
     "test:product-native-component": "tsx scripts/product-native-component.ts",
     "test:sidecar": "npm run build && tsx scripts/secret-service-sidecar-component.ts",
     "test:product-account-component": "tsx scripts/product-account-component.ts",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "test:system": "node tests/support/run-system.mjs",
+    "test:e2e": "node tests/support/run-e2e.mjs",
+    "test:acceptance-support": "node --test tests/support/*.test.mjs"
   },
   "dependencies": {
     "proper-lockfile": "4.1.2",
@@ -87,10 +90,12 @@
     "@types/react-dom": "18.3.7",
     "esbuild": "0.25.12",
     "jsdom": "26.1.0",
+    "playwright": "1.61.1",
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "tsx": "4.20.6",
     "typescript": "6.0.3",
+    "yaml": "2.9.1",
     "zod": "4.6.2"
   },
   "engines": {

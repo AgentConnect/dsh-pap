@@ -88,10 +88,18 @@ export function privateValues(state: PapState, includeOAuthState = true): string
   return [...new Set(values.filter((value): value is string => typeof value === 'string' && value.length > 0))];
 }
 export function sanitizePublicValue(value: unknown, secrets: readonly string[]): unknown { return redact(value,secrets); }
+/** Angle-bracket documentation placeholders are invalid bearer credential lexemes. */
+function credentialShape(text: string): boolean {
+  if (/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(text)) return true;
+  for (const match of text.matchAll(/(?:^|\s)(?:Bearer|DPoP)\s+(\S+)/g)) {
+    if (!/^<[A-Za-z_][A-Za-z0-9_.-]{0,63}>$/.test(match[1]!)) return true;
+  }
+  return false;
+}
 /** Only business JSON crosses the tool boundary. Protocol headers and credential-shaped fields do not. */
 function redact(value: unknown, secrets: readonly string[], depth = 0): unknown {
   requirePap(depth <= 32, 'unsupported_profile');
-  const sensitive = (text: string) => secrets.some(secret => text.includes(secret)) || /(?:^|\s)(?:Bearer|DPoP)\s+\S+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/.test(text);
+  const sensitive = (text: string) => secrets.some(secret => text.includes(secret)) || credentialShape(text);
   if (typeof value === 'string' && sensitive(value)) return '[redacted]';
   if (Array.isArray(value)) return value.map(item => redact(item, secrets, depth + 1));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [sensitive(key) ? '[redacted]' : key, privateFields.test(key) ? '[redacted]' : redact(item, secrets, depth + 1)]));
