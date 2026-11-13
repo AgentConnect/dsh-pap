@@ -253,16 +253,23 @@ export class PapService extends Service {
     await this.ready;
     requirePap(!this.stopped, 'disconnected');
     if (this.config.enabled !== true) return { state: 'disabled' };
-    if (includeManagementHints && this.config.autoConnect && !this.client) {
-      // Restore local lifecycle state for the user without discovering or connecting a Company.
-      const host=this.installedContext.get('anpIdentity') as {
-        resolveDomainAccess(context:Context,profile:'pap_session'):Promise<{identityRef:IdentityRef;policyRef:string;stateRoot:string;secretsRoot:string;secretStore:'keyring'|'local-file'}>;
-      };
-      const binding=await host.resolveDomainAccess(this.installedContext,'pap_session');
-      requirePap(!this.stopped,'disconnected');
-      this.config={...this.config,identityRef:binding.identityRef,policyRef:binding.policyRef,
-        stateRoot:binding.stateRoot,secretStore:binding.secretStore,secretsRoot:binding.secretsRoot};
-      await this.select(binding.identityRef,false);
+    if ((includeManagementHints || businessMetadata) && this.config.autoConnect && !this.client) {
+      // Serialize local recovery with domain connects and other status readers.
+      const restore = this.domainFlight.then(async () => {
+        if (this.client) return;
+        requirePap(!this.stopped,'disconnected');
+        // Restore lifecycle state without discovering, reconnecting or enabling a Company.
+        const host=this.installedContext.get('anpIdentity') as {
+          resolveDomainAccess(context:Context,profile:'pap_session'):Promise<{identityRef:IdentityRef;policyRef:string;stateRoot:string;secretsRoot:string;secretStore:'keyring'|'local-file'}>;
+        };
+        const binding=await host.resolveDomainAccess(this.installedContext,'pap_session');
+        requirePap(!this.stopped,'disconnected');
+        this.config={...this.config,identityRef:binding.identityRef,policyRef:binding.policyRef,
+          stateRoot:binding.stateRoot,secretStore:binding.secretStore,secretsRoot:binding.secretsRoot};
+        await this.select(binding.identityRef,false);
+      });
+      this.domainFlight = restore.catch(() => undefined);
+      await restore;
     }
     if (this.config.autoConnect && this.selected) {
       const host=this.installedContext.get('anpIdentity') as {resolveDomainAccess(context:Context,profile:'pap_session'):Promise<{identityRef:IdentityRef;policyRef:string}>};

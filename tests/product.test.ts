@@ -730,3 +730,32 @@ test('PAP user status restores domain state locally without connecting or sendin
   assert.equal(view.sessions[0].connected,false);
   assert.equal(f.transport.calls.length,calls);
 });
+
+test('PAP business status restores local sessions after PAP restart without connecting or reviving disconnects', async t => {
+  for (const disconnect of [false, true]) {
+    const f = await fixture(t, {autoConnect:true,businessConsumers:['example/shop']});
+    const caller = [...f.loader.entries()].find(entry => entry.options.name === 'example/shop')!;
+    const business = f.service.acquireBusiness(caller.fiber!.ctx);
+    value(await business.connect('shop.example'));
+    const before = value(await business.status());
+    if (disconnect) value(await f.manager.manage({action:'session/disconnect',sessionRef:before.sessions[0].sessionRef}));
+    const entry = [...f.loader.entries()].find(entry => entry.options.name === PAP_CONSUMER)!;
+    await f.loader.update(entry.id, {disabled:true});
+    await f.loader.update(entry.id, {disabled:false});
+    await f.loader.await();
+    const restored = f.ctx.pap.acquireBusiness(caller.fiber!.ctx);
+    const sends = f.transport.calls.length;
+    const results = await Promise.all([restored.status(), restored.status()]);
+    for (const result of results) {
+      const state = value(result);
+      assert.equal(state.state, 'ready');
+      assert.deepEqual(state.identity, before.identity);
+      assert.equal(state.companies[0].companyRef, before.companies[0].companyRef);
+      assert.equal(state.companies[0].domain, 'shop.example');
+      assert.equal(state.sessions[0].connected, !disconnect);
+    }
+    assert.equal(f.transport.calls.length, sends, 'Status recovery must not discover or connect remotely');
+    f.host.active = false;
+    error(await restored.status(), 'permission_denied');
+  }
+});
