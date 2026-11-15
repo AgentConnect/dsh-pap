@@ -30,7 +30,7 @@ try {
   const ca=await readFile(join(root,'tls.crt'));let priorSid='';let requests=0;
   server=https.createServer({key:await readFile(join(root,'tls.key')),cert:ca},(request,response)=>{
     response.setHeader('content-type','application/json');
-    if(request.url==='/.well-known/poppy.json')return response.end(JSON.stringify({protocol_version:'0.3',organization:{name:'Native component',domain:'company.test'},apis:[{type:'openapi',url:'https://company.test/openapi.json'}]}));
+    if(request.url==='/.well-known/poppy.json')return response.end(JSON.stringify({protocol_version:'1.0',organization:{name:'Native component',domain:'company.test'},apis:[{type:'openapi',url:'https://company.test/openapi.json'}]}));
     if(request.url==='/.well-known/oauth-protected-resource'){response.statusCode=404;return response.end('{}');}
     if(request.url==='/openapi.json')return response.end(JSON.stringify({openapi:'3.1.0',servers:[{url:'https://company.test'}],paths:{'/api/cart':{get:{}}}}));
     try{

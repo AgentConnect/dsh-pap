@@ -95,7 +95,7 @@ try{
         return response.end('{"ok":true}');
       }
       assert(request.headers['poppy-session']===undefined&&request.headers.authorization===undefined);
-      if(url.pathname==='/.well-known/poppy.json')return response.end(JSON.stringify({protocol_version:'0.3',organization:{name:'Controlled P18 fixture',domain:url.host},auth:{issuer:current.origin,scopes:{'profile:read':'Read profile'}},apis:[{type:'openapi',url:current.origin+'/openapi.json'}]}));
+      if(url.pathname==='/.well-known/poppy.json')return response.end(JSON.stringify({protocol_version:'1.0',organization:{name:'Controlled P18 fixture',domain:url.host},auth:{issuer:current.origin,scopes:{'profile:read':'Read profile'}},apis:[{type:'openapi',url:current.origin+'/openapi.json'}]}));
       if(url.pathname==='/.well-known/oauth-protected-resource'||url.pathname==='/.well-known/oauth-protected-resource/api')return response.end(JSON.stringify({resource:url.pathname.endsWith('/api')?resource:current.origin,authorization_servers:[current.origin]}));
       if(url.pathname==='/.well-known/oauth-authorization-server')return response.end(JSON.stringify({issuer:current.origin,authorization_endpoint:current.origin+'/authorize',token_endpoint:current.origin+'/token',revocation_endpoint:current.origin+'/revoke',protected_resources:[current.origin,resource],grant_types_supported:['authorization_code','refresh_token'],token_endpoint_auth_methods_supported:['private_key_jwt'],code_challenge_methods_supported:['S256'],...(current.dpop?{dpop_signing_alg_values_supported:['ES256']}:{})}));
       if(url.pathname==='/openapi.json')return response.end(JSON.stringify({openapi:'3.1.0',servers:[{url:resource}],paths:{'/value':{get:{}}}}));

@@ -35,7 +35,7 @@ test('F-T09 isolated real HTTPS Company independently verifies signature chain a
   const ca=await readFile(join(root,'tls.crt'));const custody=new FixtureHost();const requests:{url:string;headers:IncomingHttpHeaders}[]=[];const seen=new Set<string>();let sid='';let visits=0;
   const server=https.createServer({key:await readFile(join(root,'tls.key')),cert:ca},(request,response)=>{
     const url=`https://company.test${request.url}`; requests.push({url,headers:request.headers});response.setHeader('content-type','application/json');
-    if(request.url==='/.well-known/poppy.json')return response.end(JSON.stringify({protocol_version:'0.3',organization:{name:'HTTP Company',domain:'company.test'},apis:[{type:'openapi',url:'https://company.test/openapi.json'}]}));
+    if(request.url==='/.well-known/poppy.json')return response.end(JSON.stringify({protocol_version:'1.0',organization:{name:'HTTP Company',domain:'company.test'},apis:[{type:'openapi',url:'https://company.test/openapi.json'}]}));
     if(request.url==='/.well-known/oauth-protected-resource'){response.statusCode=404;return response.end('{}');}
     if(request.url==='/openapi.json')return response.end(JSON.stringify({openapi:'3.1.0',servers:[{url:'https://company.test'}],paths:{'/api/cart':{get:{}}}}));
     if(request.url==='/api/cart'){

@@ -35,7 +35,7 @@ export function createNoAsProductVerifier(options: NoAsProductVerifierOptions) {
     if (request.url !== '/api/ping') {
       observations.publicRequests++;
       observations.publicUnauthenticated &&= !request.headers.authorization && !request.headers['poppy-session'] && !request.headers.dpop;
-      if (request.url === '/.well-known/poppy.json') { response.end(JSON.stringify({ protocol_version: '0.3',
+      if (request.url === '/.well-known/poppy.json') { response.end(JSON.stringify({ protocol_version: '1.0',
         organization: { name: 'Independent product verifier', domain: origin.host }, apis: [{ type: 'openapi', url: options.companyOrigin + '/openapi.json' }] })); return; }
       if (request.url === '/openapi.json') { response.end(JSON.stringify({ openapi: '3.1.0', servers: [{ url: options.companyOrigin + '/api' }], paths: { '/ping': { get: {} } } })); return; }
       response.statusCode = 404; response.end('{}'); return;

@@ -92,7 +92,7 @@ export class PapClient {
       requirePap(subject.mode !== 'anonymous' || !Object.values(state.sessions).some(x => x.subjectRef === subjectRef), 'permission_denied');
       if (accountSlot) requirePap(Object.values(state.grants).some(x => this.sameUser(state, x.subjectRef, subject) && x.accountSlot === accountSlot && x.status === 'active'), 'reauthorization_required');
       const company = this.company(state, subject.companyRef);
-      const session: Session = { protocolVersion: company.protocolVersion ?? '0.3', extensions: structuredClone(company.extensions ?? {}), ref: id('sesref'), subjectRef, sid: id('ses'), generation: 1, connected: true, ...(accountSlot ? { accountSlot } : {}) };
+      const session: Session = { protocolVersion: company.protocolVersion, extensions: structuredClone(company.extensions ?? {}), ref: id('sesref'), subjectRef, sid: id('ses'), generation: 1, connected: true, ...(accountSlot ? { accountSlot } : {}) };
       state.sessions[session.ref] = session; return { sessionRef: session.ref };
     });
   }
@@ -243,7 +243,8 @@ export class PapClient {
         requirePap(shared?.refreshToken && !retriedToken, 'reauthorization_required');
         await this.refreshAccountGrant(shared.ref, sessionRef, route.resource); retriedToken = true; continue;
       }
-      if (route.channel === 'ucp') requirePap(session.protocolVersion === '1.0' && session.extensions?.ucp === '1' && company.ucp && this.options.ucpPlatformProfileUrl, 'unsupported_profile');
+      requirePap(session.protocolVersion === '1.0' && company.protocolVersion === '1.0', 'version_unsupported');
+      if (route.channel === 'ucp') requirePap(session.extensions?.ucp === '1' && company.ucp && this.options.ucpPlatformProfileUrl, 'unsupported_profile');
       if (!session.accountSlot) requirePap(!accountContext, 'reauthorization_required');
       if (grant) {
         this.assertAccountEpoch(state, subject, grant.accountSlot, grant.accountEpoch);
@@ -264,7 +265,7 @@ export class PapClient {
       await this.store.transaction(current => allowed(current));
       const sessionJwt = await lease.signPapSessionRequest({ key: delegation.key, scope: scopeFor(subject), delegation: delegation.compact, clientId: subject.binding.clientId, sid: session.sid, sub: subject.userId, agentId: subject.agentId, httpMethod: method, httpUri: url, accessToken: grant?.accessToken });
       this.checkSessionJwt(sessionJwt, delegation, subject, session, method, url, grant?.accessToken);
-      const sentHeaders: Record<string, string> = { ...headers, 'poppy-session': sessionJwt, 'poppy-version': session.protocolVersion ?? '0.3' };
+      const sentHeaders: Record<string, string> = { ...headers, 'poppy-session': sessionJwt, 'poppy-version': session.protocolVersion };
       const extensions = Object.entries(session.extensions ?? {}).sort(([a],[b]) => a.localeCompare(b));
       if (extensions.length) sentHeaders['poppy-extensions'] = extensions.map(([name,version]) => `${JSON.stringify(name)};v=${JSON.stringify(version)}`).join(', ');
       if (route.channel === 'ucp') {
@@ -319,17 +320,7 @@ export class PapClient {
       if (response.status >= 300 && response.status < 400) throw new PapError('redirect_blocked');
       if (response.status === 429) { const limited = await this.store.read(); throw cooldownError(limited, cooldownKey, this.clock()); }
       const failure = protocolFailure(response, company, route.resource, grant?.tokenType); const error = failure.code;
-      if (error === 'version_unsupported') {
-        requirePap(!retriedSession, 'version_unsupported'); retriedSession = true;
-        await this.resolvePapCompany(company.discoveryOrigin ? new URL(company.discoveryOrigin).host : company.domain);
-        await this.store.transaction(current => {
-          const value = this.session(current, sessionRef), next = this.company(current, subject.companyRef);
-          requirePap(value.generation === session.generation && (next.protocolVersion ?? '0.3') !== (value.protocolVersion ?? '0.3'), 'version_unsupported');
-          value.sid = id('ses'); value.protocolVersion = next.protocolVersion ?? '0.3'; value.extensions = structuredClone(next.extensions ?? {}); value.generation++;
-        });
-        if (control.singleOperation) throw new PapError('version_unsupported');
-        continue;
-      }
+      if (error === 'version_unsupported') throw new PapError('version_unsupported');
       if (error === 'session_ended') {
         if (retriedSession) throw new PapError('session_ended'); retriedSession = true;
         await this.store.transaction(current => { const value = this.session(current, sessionRef); requirePap(value.generation === session.generation, 'state_conflict'); value.sid = id('ses'); value.generation++; });

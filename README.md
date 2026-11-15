@@ -2,11 +2,11 @@
 
 Domain automatic access and exact-operation confirmation require `@agent-network-protocol/dsh-anp-identity >=0.1.14` in the same Host. The identity peer is optional for library-only use, but the domain plugin must have the new Host consent API. The supported policy is automatic discovered reads plus owner-approved one-shot writes; there is no full-write or chat-controlled global write setting in this release.
 
-**A PAP 0.3 client for DeepSeek Harness (DSH), powered by a reusable, locally held agent identity.**
+**A PAP 1.0 client for DeepSeek Harness (DSH), powered by a reusable, locally held agent identity.**
 
 English | [简体中文](README.zh-CN.md)
 
-[PAP 0.3 specification](https://github.com/personal-agent-protocol/personal-agent-protocol/blob/6fb46d381ac1b94265795132af13848ec442b6f6/content/versions/0.3/spec.mdx) · [Shared identity](https://github.com/agent-network-protocol/anp-identity) · [Service Agent demo](https://github.com/AgentConnect/service-agent) · [Apache-2.0](LICENSE)
+[PAP 1.0 specification](https://personalagentprotocol.org/docs/1.0/spec) · [Shared identity](https://github.com/agent-network-protocol/anp-identity) · [Service Agent demo](https://github.com/AgentConnect/service-agent) · [Apache-2.0](LICENSE)
 
 ## The problem
 
@@ -18,7 +18,7 @@ PAP is one of three complementary paths in the shared-identity system:
 | --- | --- | --- |
 | **ANP** | Published `did:wba` identity; per-request HTTP signatures | [dsh-anp](https://github.com/agent-network-protocol/dsh-anp) |
 | **MCP** | CIMD/JWKS client metadata; `private_key_jwt` and policy-approved `client_credentials` OAuth | [DSH MCP Host](https://github.com/AgentConnect/dsh-harness-identity) |
-| **PAP 0.3** | Identity-signed Delegation and per-request `Poppy-Session`, with optional separate account authorization | **This plugin** |
+| **PAP 1.0** | Identity-signed Delegation and per-request `Poppy-Session`, with optional separate account authorization | **This plugin** |
 
 One local identity anchors these protocol-specific credentials. **A PAP Session is not an MCP access token, and neither bypasses Company policy or account permissions.** Private signing keys stay with the local [ANP Identity](https://github.com/agent-network-protocol/anp-identity) Host, not with dsh-pap or a remote Company.
 
@@ -212,11 +212,8 @@ Identity 0.1.15 provides `protocol_permissions` and `identity_settings` for owne
 
 ### PAP 1.0 and UCP candidate support
 
-The client selects the newest compatible PAP discovery document (1.x or legacy
-0.3), validates same-host alternate documents without redirects, and pins the
-implemented version and extension set to each Session. Existing records without
-these fields remain 0.3; reconnecting under another version opens a new Session
-without changing the Company User ID. Callers cannot override protocol headers.
+The client accepts PAP 1.0 discovery and pins the extension set to each Session.
+Requests carry `Poppy-Version: 1.0`. Callers cannot override protocol headers.
 
 Set the Host/plugin `ucpPlatformProfileUrl` to a stable product-level HTTPS profile
 that declares the dated `2026-08-25` capabilities. It is intentionally unset by

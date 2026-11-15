@@ -217,8 +217,7 @@ test('PAP 1.0 business client interoperates with an independent HTTPS UCP Catalo
           return send(200,{ucp:{version,capabilities,payment_handlers:{},
             services:{'dev.ucp.shopping':[shopping]}}});
         if(path==='/.well-known/poppy.json')
-          return send(200,{protocol_version:'0.3',organization,supported_versions:{'1.0':origin+'/poppy/1.0.json'}});
-        if(path==='/poppy/1.0.json')return send(200,{protocol_version:'1.0',organization,extensions:{ucp:[{version:'1'}]}});
+          return send(200,{protocol_version:'1.0',organization,extensions:{ucp:[{version:'1'}]}});
         if(path==='/.well-known/ucp')return send(200,{ucp:{version,capabilities,payment_handlers:{},
           services:{'dev.ucp.shopping':[{...shopping,endpoint:origin+'/shopping'}]}}});
         return send(404,{});
@@ -281,7 +280,7 @@ test('PAP 1.0 business client interoperates with an independent HTTPS UCP Catalo
   const failure=value(await business.request({...update,idempotencyKey:staleKey}));
   assert.deepEqual(failure,{status:412,body:stale});
   assert.equal(peerFailure,undefined);
-  assert(discovery.includes('merchant.test/poppy/1.0.json')&&discovery.includes('merchant.test/.well-known/ucp')
+  assert(discovery.includes('merchant.test/.well-known/poppy.json')&&discovery.includes('merchant.test/.well-known/ucp')
     &&discovery.includes('platform.test/.well-known/ucp'));
   assert.deepEqual(calls,['POST /shopping/catalog/search','POST /shopping/carts','PUT /shopping/carts/cart_tea','PUT /shopping/carts/cart_tea']);
 });
@@ -499,7 +498,7 @@ for (const restart of [false,true]) test(`PAP product S15: a later response cann
 });
 test('PAP product S15: known credentials in discovered Company names and operation paths never reach public metadata', async t=>{
   const f=await fixture(t,{mode:'account'});const {session}=await accountConnection(f);const token='access-fixture';
-  f.transport.override=url=>url.endsWith('/poppy.json')?jsonResponse(url,{protocol_version:'0.3',organization:{name:`Company ${token}`,domain:'shop.example'},auth:{issuer:f.transport.issuer,scopes:{'orders:read':'Orders'}},apis:[{type:'openapi',url:'https://shop.example/openapi.json'}]}):url.endsWith('/openapi.json')?jsonResponse(url,{openapi:'3.1.0',servers:[{url:'https://shop.example'}],paths:{['/api/'+token]:{get:{}}}}):undefined;
+  f.transport.override=url=>url.endsWith('/poppy.json')?jsonResponse(url,{protocol_version:'1.0',organization:{name:`Company ${token}`,domain:'shop.example'},auth:{issuer:f.transport.issuer,scopes:{'orders:read':'Orders'}},apis:[{type:'openapi',url:'https://shop.example/openapi.json'}]}):url.endsWith('/openapi.json')?jsonResponse(url,{openapi:'3.1.0',servers:[{url:'https://shop.example'}],paths:{['/api/'+token]:{get:{}}}}):undefined;
   const discovery=await f.manager.manage({action:'company/discover',domain:'shop.example'});assert(!JSON.stringify(discovery).includes(token));
   const operations=value(await f.manager.operations()) as unknown as Value[];assert.equal(operations.length,1);assert(!JSON.stringify(operations).includes(token));
   value(await f.manager.manage({action:'operation/enable',operationRef:operations[0]!.operationRef,sessionRef:session.sessionRef}));
@@ -528,7 +527,7 @@ test('PAP product S15: cancelled legacy account transaction is evidence, while a
 test('PAP product: only the user authorization URL may contain the pending state; public metadata cannot echo it',async t=>{
   const f=await fixture(t,{mode:'account'});const {operation,session}=await connected(f);
   const pending=value(await f.manager.manage({action:'account/sign-in',sessionRef:session.sessionRef,operationRef:operation.operationRef,scopes:['orders:read']}));const state=new URL(pending.authorizationUrl).searchParams.get('state')!;assert(state);
-  f.transport.override=url=>url.endsWith('/poppy.json')?jsonResponse(url,{protocol_version:'0.3',organization:{name:`Company ${state}`,domain:'shop.example'},auth:{issuer:f.transport.issuer,scopes:{'orders:read':'Orders'}},apis:[{type:'openapi',url:'https://shop.example/openapi.json'}]}):url.endsWith('/openapi.json')?jsonResponse(url,{openapi:'3.1.0',servers:[{url:'https://shop.example'}],paths:{['/api/'+state]:{get:{}}}}):undefined;
+  f.transport.override=url=>url.endsWith('/poppy.json')?jsonResponse(url,{protocol_version:'1.0',organization:{name:`Company ${state}`,domain:'shop.example'},auth:{issuer:f.transport.issuer,scopes:{'orders:read':'Orders'}},apis:[{type:'openapi',url:'https://shop.example/openapi.json'}]}):url.endsWith('/openapi.json')?jsonResponse(url,{openapi:'3.1.0',servers:[{url:'https://shop.example'}],paths:{['/api/'+state]:{get:{}}}}):undefined;
   const discovery=await f.manager.manage({action:'company/discover',domain:'shop.example'});assert(!JSON.stringify(discovery).includes(state));const operations=value(await f.manager.operations()) as unknown as Value[];
   value(await f.manager.manage({action:'operation/enable',operationRef:operations[0]!.operationRef,sessionRef:session.sessionRef}));
   for(const output of [await f.manager.status(),await f.execute('pap_status'),await f.execute('pap_operations')])assert(!JSON.stringify(output).includes(state));

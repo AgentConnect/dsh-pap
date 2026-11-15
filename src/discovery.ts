@@ -30,27 +30,11 @@ export class PapDiscovery {
       break;
     }
     requirePap(response?.status === 200 && url.pathname === '/.well-known/poppy.json' && !url.search, 'discovery_failed');
-    let doc = parseJson(response);
-    sources.push({url:response.url,digest:sha256(response.body)});
-    const alternatives = doc.supported_versions === undefined ? {} : object(doc.supported_versions);
-    const versions = [...new Set([String(doc.protocol_version), ...Object.keys(alternatives)])].filter(v => v === '0.3' || /^1\.\d+$/.test(v)).sort((a,b) => Number(b.split('.')[0])-Number(a.split('.')[0]) || Number(b.split('.')[1])-Number(a.split('.')[1]));
-    requirePap(versions.length > 0, 'unsupported_profile');
-    const selected = versions[0]!;
-    if (selected !== doc.protocol_version) {
-      const target = httpsUrl(alternatives[selected]);
-      requirePap(target.host.toLowerCase() === url.host.toLowerCase() && !target.hash, 'unsafe_destination');
-      const alternate = await request(target.href);
-      requirePap(alternate.status === 200, 'discovery_failed');
-      const next = parseJson(alternate);
-      requirePap(next.protocol_version === selected && next.supported_versions === undefined && object(next.organization).domain === object(doc.organization).domain, 'discovery_failed');
-      const originalIssuer = doc.auth === undefined ? undefined : object(doc.auth).issuer;
-      const alternateIssuer = next.auth === undefined ? undefined : object(next.auth).issuer;
-      requirePap(originalIssuer === undefined || alternateIssuer === undefined || originalIssuer === alternateIssuer, 'discovery_failed');
-      doc = next; response = alternate;
-    }
-    const protocolVersion = selected.startsWith('1.') ? '1.0' as const : '0.3' as const;
+    const doc = parseJson(response);
+    requirePap(doc.protocol_version === '1.0', 'unsupported_profile');
+    const protocolVersion = '1.0' as const;
     const extensions: Record<string,string> = {};
-    if (protocolVersion === '1.0' && doc.extensions !== undefined && this.platformProfileUrl) {
+    if (doc.extensions !== undefined && this.platformProfileUrl) {
       const ucp = object(doc.extensions).ucp;
       if (Array.isArray(ucp) && ucp.some(entry => object(entry).version === '1')) extensions.ucp = '1';
     }

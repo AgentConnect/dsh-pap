@@ -14,7 +14,7 @@ const failure = (code: string) => (error: unknown) => error instanceof PapError 
 const discoveryUrl = (domain: string) => `https://${domain}/.well-known/poppy.json`;
 const issuerMetadataUrl = (issuer: string) => `${issuer}/.well-known/oauth-authorization-server`;
 function document(domain: string, issuer?: string) {
-  return { protocol_version: '0.3', organization: { name: 'Discovery contract fixture', domain },
+  return { protocol_version: '1.0', organization: { name: 'Discovery contract fixture', domain },
     apis: [{ type: 'openapi', url: `https://${domain}/openapi.json` }],
     ...(issuer ? { auth: { issuer, scopes: { 'orders:read': 'Read fixture orders' } } } : {}) };
 }

@@ -415,7 +415,7 @@ export class PapService extends Service {
     const existing = state.product?.operations[input.operationRef];
     if (existing) assertApproval(state, input.operationRef, existing);
     const session = existing ? state.sessions[existing.sessionRef] : Object.values(state.sessions).find(value => value.connected && !value.accountSlot
-      && state.subjects[value.subjectRef]?.companyRef === company.ref && (value.protocolVersion ?? '0.3') === (company.protocolVersion ?? '0.3') && JSON.stringify(value.extensions ?? {}) === JSON.stringify(company.extensions ?? {}));
+      && state.subjects[value.subjectRef]?.companyRef === company.ref && value.protocolVersion === company.protocolVersion && JSON.stringify(value.extensions ?? {}) === JSON.stringify(company.extensions ?? {}));
     requirePap(session?.connected, 'disconnected');
     const approval: ProductOperationApproval = existing ?? {companyRef:company.ref, method:route.method, template:route.template,
       resource:route.resource, sessionRef:session.ref, scopes:[], generation:state.generation};
@@ -510,7 +510,7 @@ export class PapService extends Service {
     // A disconnected session is an owner fence, not a connection failure to repair automatically.
     requirePap(!previous.length || previous.some(session => session.connected), 'disconnected');
     const selectedCompany = snapshot.companies[company.companyRef]!;
-    const session = previous.find(value => value.connected && (value.protocolVersion ?? '0.3') === (selectedCompany.protocolVersion ?? '0.3') && JSON.stringify(value.extensions ?? {}) === JSON.stringify(selectedCompany.extensions ?? {})) ?? await engine.openPapSession(subject.subjectRef);
+    const session = previous.find(value => value.connected && value.protocolVersion === selectedCompany.protocolVersion && JSON.stringify(value.extensions ?? {}) === JSON.stringify(selectedCompany.extensions ?? {})) ?? await engine.openPapSession(subject.subjectRef);
     check(); this.assertCurrentEngine(engine); await (await this.consumer()).assertActive(); check();
     const sessionRef = 'sessionRef' in session ? session.sessionRef : session.ref;
     await engine.store.transaction(state => {

@@ -29,7 +29,7 @@ test('F-T01 rejects mismatched issuer, organization, old protocol and metadata r
   const f = await setup(t);
   for (const response of [
     jsonResponse('https://shop.example/.well-known/poppy.json',{protocol_version:'0.2',organization:{name:'Bad',domain:'shop.example'}}),
-    jsonResponse('https://shop.example/.well-known/poppy.json',{protocol_version:'0.3',organization:{name:'Bad',domain:'evil.example'}}),
+    jsonResponse('https://shop.example/.well-known/poppy.json',{protocol_version:'1.0',organization:{name:'Bad',domain:'evil.example'}}),
   ]) { f.transport.override = url => url.endsWith('poppy.json') ? response : undefined; await assert.rejects(f.client.resolvePapCompany('shop.example')); }
   f.transport.override = url => url.endsWith('oauth-protected-resource') ? jsonResponse(url,{},302,{location:'https://evil.example/metadata'}) : undefined;
   await assert.rejects(f.client.resolvePapCompany('shop.example'), fails('discovery_failed'));

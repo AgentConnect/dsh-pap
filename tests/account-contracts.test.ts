@@ -14,7 +14,7 @@ const fails=(code:string)=>(error:unknown)=>error instanceof PapError&&error.cod
 async function setup(t:test.TestContext,scopeNames=['orders:read']) {
   const root=await mkdtemp(join(tmpdir(),'pap-account-contract-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const host=new FixtureHost();const transport=new FixtureTransport();transport.mode='account';
-  transport.override=url=>url.endsWith('/.well-known/poppy.json')?jsonResponse(url,{protocol_version:'0.3',organization:{name:'Account contract fixture',domain:'shop.example'},auth:{issuer:transport.issuer,scopes:Object.fromEntries(scopeNames.map(scope=>[scope,scope]))},apis:[{type:'openapi',url:origin+'/openapi.json'}]}):undefined;
+  transport.override=url=>url.endsWith('/.well-known/poppy.json')?jsonResponse(url,{protocol_version:'1.0',organization:{name:'Account contract fixture',domain:'shop.example'},auth:{issuer:transport.issuer,scopes:Object.fromEntries(scopeNames.map(scope=>[scope,scope]))},apis:[{type:'openapi',url:origin+'/openapi.json'}]}):undefined;
   const client=new PapClient({stateRoot:root,binding,secretStore:secrets,identityHost:host,callbackHandoff:{register:async()=>({callbackRef:'fixture-only-pickup-reference'}),collect:async()=>({})}},transport);
   t.after(()=>client.close());const company=await client.resolvePapCompany('shop.example');const subject=await client.getOrCreatePapUser(company.companyRef,'regular',true);const signedOut=await client.openPapSession(subject.subjectRef);
   return {client,host,transport,...company,...subject,signedOut,scopeNames};

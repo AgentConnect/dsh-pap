@@ -24,11 +24,10 @@ export interface AsMetadata {
   code_challenge_methods_supported?: string[];
   pushed_authorization_request_endpoint?: string; require_pushed_authorization_requests?: boolean;
 }
-export type PapVersion = '0.3' | '1.0';
+export type PapVersion = '1.0';
 export interface UcpMetadata { profileUrl: string; platformProfileUrl: string; version: string; digest: string; endpoint: string; capabilities: string[] }
 export interface Company {
-  /** Missing persisted values denote a legacy 0.3 record. */
-  protocolVersion?: PapVersion; extensions?: Record<string, string>; ucp?: UcpMetadata;
+  protocolVersion: PapVersion; extensions?: Record<string, string>; ucp?: UcpMetadata;
   /** Initial HTTPS discovery origin, pinned through validated redirects; never inferred from a hostname suffix. */
   discoveryOrigin?: string;
   ref: string; domain: string; name: string; companyId: string; issuer?: string; authDisabled: boolean;
@@ -37,7 +36,7 @@ export interface Company {
   sources: { url: string; digest: string }[];
 }
 export interface Subject { ref: string; companyRef: string; companyId: string; binding: Binding; mode: 'regular' | 'anonymous'; userId: string; agentId?: string }
-export interface Session { protocolVersion?: PapVersion; extensions?: Record<string, string>; ref: string; subjectRef: string; sid: string; accountSlot?: string; generation: number; connected: boolean; autoReadConfigured?: boolean }
+export interface Session { protocolVersion: PapVersion; extensions?: Record<string, string>; ref: string; subjectRef: string; sid: string; accountSlot?: string; generation: number; connected: boolean; autoReadConfigured?: boolean }
 export interface Delegation { subjectRef: string; key: KeyRef; compact: string; expiresAt: number; generation: number }
 export interface Grant {
   ref: string; subjectRef: string; accountSlot: string; issuer: string; clientId: string; resource: string; scope: string[];
