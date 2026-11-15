@@ -1,6 +1,7 @@
 /** Structural Host contract across independently versioned protocol packages; no policy mutation surface. */
 import type { Context } from '@deepseek-ai/cordis';
 import type { Company, Route } from './types.js';
+import { isUcpRead } from './ucp.js';
 import { requirePap } from './errors.js';
 export interface PolicyTarget { readonly protocolTarget: true }
 export interface PolicyClassification { effect: 'read'|'write'|'unknown'|'payment'; extraPermissions: boolean }
@@ -15,6 +16,8 @@ export interface PolicyClient {
 export interface PolicyHost { bindProtocolPolicy(context:Context,protocol:'pap'): PolicyClient }
 /** Discovery metadata is retained for the Host classifier; never accept effect labels from tool arguments. */
 export function classifyRoute(policy: PolicyClient, route: Route): PolicyClassification {
+  if (isUcpRead(route)) return {effect:'read',extraPermissions:false};
+  if (route.channel === 'ucp' && route.operationId === 'complete_checkout') return {effect:'payment',extraPermissions:true};
   // Old stored routes did not retain semantic evidence. Rediscovery is required before automatic use.
   if (!route.policyEvidence) return {effect:'unknown',extraPermissions:Boolean(route.requiresConsent)};
   return policy.classifyHttp({...route.policyEvidence,method:route.method});

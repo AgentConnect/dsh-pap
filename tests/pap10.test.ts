@@ -1,0 +1,97 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {PapDiscovery} from '../src/discovery.js';
+import {PapClient} from '../src/client.js';
+import {isUcpRead,UCP_VERSION} from '../src/ucp.js';
+import {binding,FixtureHost,FixtureTransport,jsonResponse,secrets} from './fixture.js';
+const origin='https://shop.example';
+const platformUrl='https://agent.example/ucp-platform';
+const profile=(endpoint?:string)=>({ucp:{version:UCP_VERSION,payment_handlers:{},services:endpoint?{'dev.ucp.shopping':[{transport:'rest',version:UCP_VERSION,endpoint}]}:{},capabilities:Object.fromEntries(['catalog.search','catalog.lookup','cart','checkout','order'].map(name=>[`dev.ucp.shopping.${name}`,[{version:UCP_VERSION}]]))}});
+function fixture(){
+  const transport=new FixtureTransport();
+  transport.override=url=>{
+    if(url.endsWith('/poppy.json'))return jsonResponse(url,{protocol_version:'0.3',supported_versions:{'1.0':`${origin}/pap/1.json`},organization:{name:'Shop',domain:'shop.example'},apis:[{type:'openapi',url:`${origin}/openapi.json`}]});
+    if(url.endsWith('/pap/1.json'))return jsonResponse(url,{protocol_version:'1.0',organization:{name:'Shop',domain:'shop.example'},extensions:{ucp:[{version:'1'}]},apis:[{type:'openapi',url:`${origin}/openapi.json`}]});
+    if(url===`${origin}/.well-known/ucp`)return jsonResponse(url,profile(`${origin}/ucp/v1`));
+    if(url===platformUrl)return jsonResponse(url,profile());
+    if(url.includes('/.well-known/oauth-protected-resource/'))return jsonResponse(url,{},404);
+    if(url.includes('/ucp/v1'))return jsonResponse(url,{ucp:{version:UCP_VERSION},id:'cart_one'});
+  };
+  return transport;
+}
+async function setup(t:test.TestContext,transport=fixture()){
+  const root=await mkdtemp(join(tmpdir(),'pap10-unit-'));t.after(()=>rm(root,{recursive:true,force:true}));
+  const client=new PapClient({stateRoot:root,binding,identityHost:new FixtureHost(),secretStore:secrets,ucpPlatformProfileUrl:platformUrl,callbackHandoff:{register:async()=>({callbackRef:'fixture'}),collect:async()=>({})}},transport);
+  const company=await client.resolvePapCompany('shop.example');const subject=await client.getOrCreatePapUser(company.companyRef);const session=await client.openPapSession(subject.subjectRef);
+  return {client,transport,...company,...subject,...session};
+}
+test('PAP 1.0 selects alternate document and negotiates configured product profile',async()=>{
+  const transport=fixture();const company=await new PapDiscovery(transport,()=>Date.now(),platformUrl).resolve('shop.example');
+  assert.equal(company.protocolVersion,'1.0');assert.deepEqual(company.extensions,{ucp:'1'});assert.equal(company.ucp?.platformProfileUrl,platformUrl);
+  assert.equal(company.routes.filter(r=>r.channel==='ucp').length,13);
+  assert(company.routes.filter(r=>r.operationId==='search_catalog').every(isUcpRead));
+  assert(!isUcpRead({...company.routes.find(r=>r.operationId==='create_cart')!,policyEvidence:{hasRequestBody:true,declaredEffect:'read'}}));
+  const plain=await new PapDiscovery(transport).resolve('shop.example');assert.equal(plain.protocolVersion,'1.0');assert(!plain.ucp);assert(!plain.routes.some(r=>r.channel==='ucp'));
+});
+test('PAP alternate documents cannot redirect, change version or move to another host',async()=>{
+  for(const mode of ['redirect','version','host']){
+    const transport=fixture(),prior=transport.override!;
+    transport.override=(url,options)=>{
+      if(mode==='host'&&url.endsWith('poppy.json'))return jsonResponse(url,{protocol_version:'0.3',supported_versions:{'1.0':'https://evil.example/pap.json'},organization:{name:'Shop',domain:'shop.example'}});
+      if(url.endsWith('/pap/1.json'))return mode==='redirect'?jsonResponse(url,{},302,{location:`${origin}/other`}):jsonResponse(url,{protocol_version:'0.3',organization:{name:'Shop',domain:'shop.example'}});
+      return prior(url,options);
+    };
+    await assert.rejects(new PapDiscovery(transport,()=>Date.now(),platformUrl).resolve('shop.example'));
+    assert(!transport.calls.some(c=>c.url.startsWith('https://evil.example')));
+  }
+});
+test('Session pins version and extension headers and protects caller overrides',async t=>{
+  const f=await setup(t);await f.client.dispatchPap(f.sessionRef,{url:`${origin}/ucp/v1/catalog/search`,method:'POST',body:'{}'});
+  const sent=f.transport.calls.at(-1)!.options!.headers!;
+  assert.equal(sent['poppy-version'],'1.0');assert.equal(sent['poppy-extensions'],'"ucp";v="1"');assert.equal(sent['ucp-agent'],`profile="${platformUrl}"`);
+  for(const header of ['Poppy-Version','Poppy-Extensions','UCP-Agent','Signature','Signature-Input','Content-Digest'])await assert.rejects(f.client.dispatchPap(f.sessionRef,{url:`${origin}/api/cart`,headers:{[header]:'bad'}}));
+  await f.client.store.transaction(state=>{delete state.sessions[f.sessionRef]!.protocolVersion;delete state.sessions[f.sessionRef]!.extensions;});
+  await f.client.dispatchPap(f.sessionRef,{url:`${origin}/api/cart`});assert.equal(f.transport.calls.at(-1)!.options!.headers!['poppy-version'],'0.3');
+  await assert.rejects(f.client.dispatchPap(f.sessionRef,{url:`${origin}/ucp/v1/catalog/search`,method:'POST',body:'{}'}));
+});
+test('PAR is preferred, carries consent, assertion and the same DPoP key as token exchange',async t=>{
+  const transport=new FixtureTransport();transport.mode='account';
+  transport.override=url=>url.includes('oauth-authorization-server')?jsonResponse(url,{issuer:transport.issuer,protected_resources:[origin],token_endpoint:`${transport.issuer}/token`,authorization_endpoint:`${transport.issuer}/authorize`,revocation_endpoint:`${transport.issuer}/revoke`,pushed_authorization_request_endpoint:`${transport.issuer}/par`,require_pushed_authorization_requests:true,grant_types_supported:['authorization_code','refresh_token'],token_endpoint_auth_methods_supported:['private_key_jwt'],code_challenge_methods_supported:['S256'],dpop_signing_alg_values_supported:['ES256']}):url.endsWith('/par')?jsonResponse(url,{request_uri:'urn:ietf:params:oauth:request_uri:test',expires_in:60},201):undefined;
+  const f=await setup(t,transport);const login=await f.client.startSignIn(f.subjectRef,{scopes:['orders:read'],resource:origin,redirectUri:'https://agent.example/pap-callback',callbackMode:'handoff'});
+  const url=new URL(login.authorizationUrl);assert.deepEqual([...url.searchParams.keys()].sort(),['client_id','request_uri']);
+  const par=transport.calls.find(c=>c.url.endsWith('/par'))!;const fields=new URLSearchParams(par.options!.body);assert.equal(fields.get('prompt'),'consent');assert(fields.get('client_assertion'));assert(par.options!.headers!.dpop);assert(!par.options!.headers!['poppy-session']);
+  const state=await f.client.store.read(),tx=state.transactions[login.transactionRef]!;
+  const result=await f.client.completeSignIn(tx.ref,{state:tx.state,iss:tx.issuer,code:'fixture-code'});
+  assert.equal((await f.client.store.read()).grants[result.grantRef]!.dpopKey!.handle,tx.dpopKey!.handle);
+});
+test('resource tokens rotate one shared refresh grant with its original DPoP key',async t=>{
+  const transport=new FixtureTransport();transport.mode='account';const f=await setup(t,transport);
+  const login=await f.client.startSignIn(f.subjectRef,{scopes:['orders:read'],resource:origin,redirectUri:'https://agent.example/pap-callback',callbackMode:'handoff'});
+  const tx=(await f.client.store.read()).transactions[login.transactionRef]!;const result=await f.client.completeSignIn(tx.ref,{state:tx.state,iss:tx.issuer,code:'fixture-code'});
+  const original=(await f.client.store.read()).grants[result.grantRef]!;
+  await f.client.store.transaction(state=>state.companies[f.companyRef]!.routes.push({method:'GET',template:`${origin}/api/second`,resource:`${origin}/second`}));
+  await f.client.refreshAccountGrant(result.grantRef,undefined,`${origin}/second`);
+  const state=await f.client.store.read();assert.equal(Object.keys(state.grants).length,1);assert.equal(state.grants[result.grantRef]!.resource,`${origin}/second`);assert.equal(state.grants[result.grantRef]!.dpopKey!.handle,original.dpopKey!.handle);
+});
+
+test('UCP writes require UUID idempotency and always supply a UUID Request-Id',async t=>{
+  const f=await setup(t);
+  for(const idempotencyKey of [undefined,'legacy-command'])await assert.rejects(f.client.dispatchPap(f.sessionRef,{url:`${origin}/ucp/v1/carts`,method:'POST',body:'{}',idempotencyKey}));
+  assert(!f.transport.calls.some(call=>call.url===`${origin}/ucp/v1/carts`));
+  const idempotencyKey='7a66afff-4d4a-4d28-9dfb-247e7e72f7f1';await f.client.dispatchPap(f.sessionRef,{url:`${origin}/ucp/v1/carts`,method:'POST',body:'{}',idempotencyKey});
+  const headers=f.transport.calls.at(-1)!.options!.headers!;assert.equal(headers['idempotency-key'],idempotencyKey);assert.match(headers['request-id']!,/^[a-f0-9-]{36}$/);
+});
+test('version_unsupported starts a new sid without changing the User and retries once',async t=>{
+  const f=await setup(t);await f.client.store.transaction(state=>{state.sessions[f.sessionRef]!.protocolVersion='0.3';state.sessions[f.sessionRef]!.extensions={};});
+  const before=(await f.client.store.read()).sessions[f.sessionRef]!.sid;const previous=f.transport.override!;let sent=0;
+  f.transport.override=(url,options)=>url===`${origin}/api/cart`&&++sent===1?jsonResponse(url,{error:'version_unsupported'},400):previous(url,options);
+  const response=await f.client.dispatchPap(f.sessionRef,{url:`${origin}/api/cart`});assert.equal(response.status,200);assert.equal(sent,2);
+  const session=(await f.client.store.read()).sessions[f.sessionRef]!;assert.notEqual(session.sid,before);assert.equal(session.protocolVersion,'1.0');assert.equal(session.subjectRef,f.subjectRef);
+});
+test('service PRM must match its exact resource rather than broad origin metadata',async()=>{
+  const transport=fixture(),prior=transport.override!;transport.override=(url,options)=>url===`${origin}/.well-known/oauth-protected-resource/ucp/v1`?jsonResponse(url,{resource:origin}):prior(url,options);
+  await assert.rejects(new PapDiscovery(transport,()=>Date.now(),platformUrl).resolve('shop.example'));
+});

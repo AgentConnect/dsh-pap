@@ -33,6 +33,8 @@ export interface CallbackHandoff {
 }
 export interface PapHostOptions {
   binding: Binding; identityHost: PapIdentityHost; secretStore: HostSecretStore; stateRoot: string;
+  /** Stable, product-level public UCP profile; never a user client identity URL. */
+  ucpPlatformProfileUrl?: string;
   callbackHandoff?: CallbackHandoff; clock?: () => number;
   /** Maximum local inline cooldown wait, 0..5000ms; this never shortens the persisted server fence. */
   inlineCooldownWaitMs?: number;

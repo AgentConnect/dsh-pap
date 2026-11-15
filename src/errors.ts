@@ -3,7 +3,7 @@ export type PapErrorCode =
   | 'protocol_policy_required' | 'protocol_rediscovery_required' | 'protocol_permission_denied'
   | 'discovery_failed' | 'unsupported_profile' | 'unsafe_destination' | 'namespace_changed'
   | 'permission_denied' | 'state_conflict' | 'state_corrupt' | 'credential_unavailable'
-  | 'delegation_blocked' | 'invalid_session' | 'session_ended' | 'invalid_token'
+  | 'version_unsupported' | 'delegation_blocked' | 'invalid_session' | 'session_ended' | 'invalid_token'
   | 'reauthorization_required' | 'unsupported_sign_in' | 'invalid_authorization_response'
   | 'insufficient_scope' | 'unauthorized_client' | 'rate_limited' | 'request_uncertain'
   | 'redirect_blocked' | 'invalid_client' | 'invalid_dpop_proof' | 'invalid_scope' | 'invalid_target' | 'oauth_error' | 'disconnected' | 'revocation_pending' | 'not_configured' | 'credential_history_incomplete';

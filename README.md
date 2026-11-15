@@ -209,3 +209,30 @@ Classification uses the discovered method, body/security declarations and option
 Failed `pap_request` results add `phase` and `businessRequest`: `not_sent` means no business transport call began, `unknown` means a transport attempt without a received response, and `response_received` retains `httpStatus` even when a later local permission check fails. These fields do not expose credentials, prove delivery of an attempted request, or justify retrying an uncertain write. The local candidate is jointly verified on both services through all three protocols; use Identity 0.1.15 with adapter 0.1.4.
 
 Identity 0.1.15 provides `protocol_permissions` and `identity_settings` for owner-confirmed persistent settings changes from the Agent. A fresh explicit `pap_connect` adopts the saved default identity/epoch without deleting stored sessions or credentials; in-flight requests keep their old engine/identity fences. Configuration approval does not approve a business request or grant generic signing.
+
+### PAP 1.0 and UCP candidate support
+
+The client selects the newest compatible PAP discovery document (1.x or legacy
+0.3), validates same-host alternate documents without redirects, and pins the
+implemented version and extension set to each Session. Existing records without
+these fields remain 0.3; reconnecting under another version opens a new Session
+without changing the Company User ID. Callers cannot override protocol headers.
+
+Set the Host/plugin `ucpPlatformProfileUrl` to a stable product-level HTTPS profile
+that declares the dated `2026-08-25` capabilities. It is intentionally unset by
+default and must never be a per-user OAuth client URL. With this configuration,
+the client discovers the Business profile, intersects capabilities, and exposes
+standard Shopping REST operation IDs with `channel: "ucp"`. Catalog POST
+operations use built-in read semantics. Every UCP request carries `UCP-Agent` and
+`Request-Id`; writes require a UUID `idempotencyKey`. The product API also accepts
+a bounded `ifMatch` ETag and returns a safe `etag` for optimistic Cart updates.
+No HTTP Message Signature or payment-execution capability is claimed.
+
+Direct handoff uses `prompt=consent`. Offered PAR is preferred and required PAR
+cannot fall back; PAR uses the existing local assertion/DPoP custody. Incremental
+scope requests retain existing approved scopes. Resource changes serialize on
+one refresh-grant record and retain its original DPoP handle; only the current
+resource access token is cached, so refresh tokens are never copied into
+independently rotating resource records. The optional Identity evidence field
+`pushedAuthorizationRequestEndpoint` requires the matching candidate Identity
+plugin for explicit PAR method restrictions. Existing ES256 signing remains valid.

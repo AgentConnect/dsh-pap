@@ -3,7 +3,7 @@ import type { Company, HttpResponse } from './types.js';
 import { responseHeader } from './cooldown.js';
 import { httpsUrl, parseJson } from './util.js';
 const token = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
-const allowedErrors = new Set(['invalid_request','invalid_client','invalid_grant','invalid_scope','invalid_target','invalid_token','insufficient_scope','unauthorized_client','invalid_dpop_proof','use_dpop_nonce','invalid_session','session_ended','access_denied','extension_required']);
+const allowedErrors = new Set(['invalid_request','invalid_client','invalid_grant','invalid_scope','invalid_target','invalid_token','insufficient_scope','unauthorized_client','invalid_dpop_proof','use_dpop_nonce','invalid_session','session_ended','access_denied','extension_required','version_unsupported']);
 const challengeErrors = new Set(['invalid_request','invalid_client','invalid_grant','invalid_scope','invalid_target','invalid_token','insufficient_scope','unauthorized_client','invalid_dpop_proof','use_dpop_nonce','access_denied']);
 interface Challenge { scheme: 'Bearer' | 'DPoP'; error?: string; scope?: string; metadata?: string; invalid: boolean }
 function parameter(value: string): [string,string] | undefined {

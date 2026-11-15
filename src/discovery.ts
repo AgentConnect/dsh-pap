@@ -1,9 +1,10 @@
 import type { AsMetadata, Company, HttpResponse, HttpTransport, JsonObject, Route } from './types.js';
+import { negotiateUcp } from './ucp.js';
 import { PapError, requirePap } from './errors.js';
 import { httpsUrl, id, object, parseJson, sha256, sha256Hex, strings } from './util.js';
 const optionalStrings = (value: unknown) => value === undefined ? undefined : strings(value);
 export class PapDiscovery {
-  constructor(private readonly transport: HttpTransport, private readonly clock = () => Date.now()) {}
+  constructor(private readonly transport: HttpTransport, private readonly clock = () => Date.now(), private readonly platformProfileUrl?: string) {}
   async resolve(domain: string): Promise<Company> {
     try { return await this.discover(domain); }
     catch (error) { if (error instanceof PapError && ['unsupported_profile', 'unsafe_destination'].includes(error.code)) throw error; throw new PapError('discovery_failed'); }
@@ -29,8 +30,31 @@ export class PapDiscovery {
       break;
     }
     requirePap(response?.status === 200 && url.pathname === '/.well-known/poppy.json' && !url.search, 'discovery_failed');
-    const doc = parseJson(response); const organization = object(doc.organization);
-    requirePap(doc.protocol_version === '0.3', 'unsupported_profile');
+    let doc = parseJson(response);
+    sources.push({url:response.url,digest:sha256(response.body)});
+    const alternatives = doc.supported_versions === undefined ? {} : object(doc.supported_versions);
+    const versions = [...new Set([String(doc.protocol_version), ...Object.keys(alternatives)])].filter(v => v === '0.3' || /^1\.\d+$/.test(v)).sort((a,b) => Number(b.split('.')[0])-Number(a.split('.')[0]) || Number(b.split('.')[1])-Number(a.split('.')[1]));
+    requirePap(versions.length > 0, 'unsupported_profile');
+    const selected = versions[0]!;
+    if (selected !== doc.protocol_version) {
+      const target = httpsUrl(alternatives[selected]);
+      requirePap(target.host.toLowerCase() === url.host.toLowerCase() && !target.hash, 'unsafe_destination');
+      const alternate = await request(target.href);
+      requirePap(alternate.status === 200, 'discovery_failed');
+      const next = parseJson(alternate);
+      requirePap(next.protocol_version === selected && next.supported_versions === undefined && object(next.organization).domain === object(doc.organization).domain, 'discovery_failed');
+      const originalIssuer = doc.auth === undefined ? undefined : object(doc.auth).issuer;
+      const alternateIssuer = next.auth === undefined ? undefined : object(next.auth).issuer;
+      requirePap(originalIssuer === undefined || alternateIssuer === undefined || originalIssuer === alternateIssuer, 'discovery_failed');
+      doc = next; response = alternate;
+    }
+    const protocolVersion = selected.startsWith('1.') ? '1.0' as const : '0.3' as const;
+    const extensions: Record<string,string> = {};
+    if (protocolVersion === '1.0' && doc.extensions !== undefined && this.platformProfileUrl) {
+      const ucp = object(doc.extensions).ucp;
+      if (Array.isArray(ucp) && ucp.some(entry => object(entry).version === '1')) extensions.ucp = '1';
+    }
+    const organization = object(doc.organization);
     requirePap(typeof organization.domain === 'string' && organization.domain.toLowerCase() === url.host.toLowerCase() && typeof organization.name === 'string' && organization.name.length > 0, 'discovery_failed');
     // Host comparison includes explicit ports in deliberately configured isolated deployments.
     const origin = `https://${url.host.toLowerCase()}`;
@@ -69,12 +93,17 @@ export class PapDiscovery {
       httpsUrl(meta.token_endpoint);
       if (meta.authorization_endpoint !== undefined) httpsUrl(meta.authorization_endpoint);
       if (meta.revocation_endpoint !== undefined) httpsUrl(meta.revocation_endpoint);
+      if (meta.pushed_authorization_request_endpoint !== undefined) httpsUrl(meta.pushed_authorization_request_endpoint);
+      requirePap(meta.require_pushed_authorization_requests === undefined || typeof meta.require_pushed_authorization_requests === 'boolean', 'discovery_failed');
+      requirePap(meta.require_pushed_authorization_requests !== true || typeof meta.pushed_authorization_request_endpoint === 'string', 'discovery_failed');
       metadata = {
         issuer, token_endpoint: meta.token_endpoint as string, protected_resources: resources,
         authorization_endpoint: meta.authorization_endpoint as string | undefined, revocation_endpoint: meta.revocation_endpoint as string | undefined,
         grant_types_supported: optionalStrings(meta.grant_types_supported) ?? ['authorization_code', 'implicit'],
         token_endpoint_auth_methods_supported: optionalStrings(meta.token_endpoint_auth_methods_supported),
         dpop_signing_alg_values_supported: optionalStrings(meta.dpop_signing_alg_values_supported),
+        pushed_authorization_request_endpoint: meta.pushed_authorization_request_endpoint as string | undefined,
+        require_pushed_authorization_requests: meta.require_pushed_authorization_requests as boolean | undefined,
         code_challenge_methods_supported: optionalStrings(meta.code_challenge_methods_supported),
       };
     }
@@ -91,11 +120,12 @@ export class PapDiscovery {
         requirePap(response.status === 200, 'discovery_failed'); record(response);
         const metadata = parseJson(response); httpsUrl(metadata.resource);
         if (metadata.scopes_supported !== undefined) strings(metadata.scopes_supported).forEach(scope => advertisedScopes.add(scope));
-        requirePap(metadata.resource === origin || metadata.resource === service, 'discovery_failed');
+        requirePap(metadata.resource === service, 'discovery_failed');
         if (mcp) requirePap(metadata.resource === service, 'discovery_failed');
         if (issuer && metadata.authorization_servers !== undefined) requirePap(strings(metadata.authorization_servers).includes(issuer), 'discovery_failed');
         resource = metadata.resource as string;
       } else requirePap(!mcp, 'discovery_failed');
+      if (issuer && metadata) requirePap(metadata.protected_resources.includes(resource), 'discovery_failed');
       resourceCache.set(service, resource); return resource;
     };
     if (doc.apis !== undefined) {
@@ -171,9 +201,26 @@ export class PapDiscovery {
         for (const [method, suffix] of [['POST',''],['GET','/{id}'],['GET','/{id}/messages'],['POST','/{id}/messages'],['POST','/{id}/close']] as const) routes.push({ method, template: endpoint + suffix, resource, channel: 'poppy' });
       }
     }
+    let ucp: Company['ucp'];
+    if (extensions.ucp) {
+      let profileUrl = `${origin}/.well-known/ucp`;
+      const platformUrl = httpsUrl(this.platformProfileUrl!).href;
+      let business = await read(profileUrl);
+      if (object(business.ucp).version !== '2026-08-25') {
+        const alternatives = object(object(business.ucp).supported_versions);
+        const target = httpsUrl(alternatives['2026-08-25']);
+        requirePap(target.host.toLowerCase() === url.host.toLowerCase(), 'unsafe_destination');
+        profileUrl = target.href; business = await read(profileUrl);
+      }
+      const platform = await read(platformUrl);
+      const negotiated = negotiateUcp(business, platform, profileUrl, platformUrl, origin);
+      ucp = negotiated.ucp;
+      const resource = await serviceResource(ucp.endpoint);
+      routes.push(...negotiated.routes.map(route => ({...route,resource})));
+    }
     requirePap(routes.length > 0 && routes.length <= 2048, 'unsupported_profile');
     const scopes = [...new Set([...(auth.scopes === undefined ? [] : Object.keys(object(auth.scopes))), ...discoveredScopes, ...advertisedScopes])];
-    return { ref: id('cmp'), discoveryOrigin, domain: url.host.toLowerCase(), name: organization.name, companyId: issuer ?? origin, issuer,
+    return { protocolVersion, extensions, ...(ucp ? {ucp} : {}), ref: id('cmp'), discoveryOrigin, domain: url.host.toLowerCase(), name: organization.name, companyId: issuer ?? origin, issuer,
       authDisabled: auth.disabled === true, authMode: issuer ? auth.disabled === true ? 'disabled' : 'account' : 'no_as', metadata,
       routes, scopes, metadataDigest: sha256Hex(JSON.stringify([discoveryOrigin,sources])), sources, expiresAt: this.clock() + 300000, generation: 1 };
   }

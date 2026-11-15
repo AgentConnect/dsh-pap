@@ -34,6 +34,8 @@ export const operationRequestSchema = z.object({
   path: z.record(z.string(), z.string().max(1024)).optional(),
   query: z.record(z.string(), z.string().max(4096)).optional(),
   body: z.json().optional(),
+  ifMatch: z.string().min(1).max(256).regex(/^(?:"[A-Za-z0-9._:-]+"|[A-Za-z0-9._:-]+)$/).optional(),
+  idempotencyKey: z.string().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/).optional(),
 }).strict();
 export type PapOperationRequest = z.infer<typeof operationRequestSchema>;
 export interface PapRequestTrace {

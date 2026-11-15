@@ -13,6 +13,7 @@ import { DeviceCallbackHandoff } from './callback-handoff.js';
 import { PAP_CONSUMER, PAP_MANAGER, PAP_TOOLS, identityReferenceSchema, managementRequestSchema, operationRequestSchema, type PapHostConsumer, type PapManagementRequest, type ProductResult, type PapRequestTrace } from './product-api.js';
 import { assertApproval, findOperation, prepareOperation, prepareDiscoveredOperation, privateValues, publicOperations, publicResponse, sanitizePublicValue } from './product-operations.js';
 import { httpsUrl, id, sha256 } from './util.js';
+import { isUcpRead } from './ucp.js';
 import { strictJson } from './strict-json.js';
 import { CredentialHistory } from './credential-history.js';
 import { PapConsentPending, waitForConsent, type DomainOperationConsumer, type ConsentDecision } from './domain-consent.js';
@@ -28,6 +29,7 @@ export interface PapPluginConfig {
   approvalWaitMs?: number;
   approvalPollMs?: number;
   stateRoot?: string;
+  ucpPlatformProfileUrl?: string;
   keyringService?: string;
   /** Explicit local storage selection; no automatic fallback between backends. */
   secretStore?: 'keyring' | 'local-file';
@@ -182,7 +184,7 @@ export class PapService extends Service {
         register: async input => { const driver = await management(input.transactionId); try { return await new DeviceCallbackHandoff(driver).register(input); } finally { driver.dispose(); } },
         collect: async callbackRef => { const driver = await management(undefined, callbackRef); try { return await new DeviceCallbackHandoff(driver).collect(callbackRef); } finally { driver.dispose(); } },
       };
-      next = new PapClient({ stateRoot: join(this.config.stateRoot!, `identity-${sha256(JSON.stringify(binding))}`), binding, identityHost: protocolHost, secretStore: secrets, callbackHandoff: handoff, observeCredentials: credentials => this.credentialHistory.observe(credentials) }, host?.transport ?? new SafeHttpsTransport({maxBytes:this.config.businessConsumers?.length ? 8*1024*1024 : 1024*1024}));
+      next = new PapClient({ ucpPlatformProfileUrl: this.config.ucpPlatformProfileUrl, stateRoot: join(this.config.stateRoot!, `identity-${sha256(JSON.stringify(binding))}`), binding, identityHost: protocolHost, secretStore: secrets, callbackHandoff: handoff, observeCredentials: credentials => this.credentialHistory.observe(credentials) }, host?.transport ?? new SafeHttpsTransport({maxBytes:this.config.businessConsumers?.length ? 8*1024*1024 : 1024*1024}));
       await next.recover(); await consumer.assertActive(); requirePap(!this.stopped, 'disconnected');
       if (persist) await this.persistSelection(reference);
       await consumer.assertActive(); requirePap(!this.stopped, 'disconnected');
@@ -288,7 +290,7 @@ export class PapService extends Service {
     return this.publicValue(state,{ state: 'ready', identity: this.selected, supportedSignIn: ['direct'],
       ...(includeManagementHints ? { authenticationHints: [...this.authHints].map(([operationRef, hint]) => ({ operationRef, ...hint })),
         pendingSignIns: Object.values(state.transactions).filter(value => value.status === 'pending' && value.expiresAt > Date.now()).map(value => ({ transactionRef:value.ref, accountSlot:value.accountSlot, ...(state.subjects[value.subjectRef]?{companyRef:state.subjects[value.subjectRef]!.companyRef}:{}), expiresAt:value.expiresAt })) } : {}),
-      companies: Object.values(state.companies).map(value => ({ companyRef: value.ref, ...(businessMetadata?{domain:value.domain,companyId:value.companyId}:{}), name: value.name, authMode: value.authMode, scopes: value.scopes })),
+      companies: Object.values(state.companies).map(value => ({ companyRef: value.ref, ...(businessMetadata?{domain:value.domain,companyId:value.companyId,...(value.ucp?{ucpCapabilities:value.ucp.capabilities}:{})}:{}), name: value.name, authMode: value.authMode, scopes: value.scopes })),
       sessions: Object.values(state.sessions).map(value => ({ sessionRef: value.ref, ...(state.subjects[value.subjectRef] ? { companyRef: state.subjects[value.subjectRef]!.companyRef } : {}), connected: value.connected, account: Boolean(value.accountSlot), ...(value.accountSlot ? { accountSlot: value.accountSlot } : {}) })),
       accounts: Object.values(state.grants).map(value => ({ accountSlot: value.accountSlot, ...(state.subjects[value.subjectRef] ? { companyRef:state.subjects[value.subjectRef]!.companyRef } : {}), status: value.status, scopes: value.scope,canRefresh:value.status==='active'&&Boolean(value.refreshToken) })),
     }) as object;
@@ -413,7 +415,7 @@ export class PapService extends Service {
     const existing = state.product?.operations[input.operationRef];
     if (existing) assertApproval(state, input.operationRef, existing);
     const session = existing ? state.sessions[existing.sessionRef] : Object.values(state.sessions).find(value => value.connected && !value.accountSlot
-      && state.subjects[value.subjectRef]?.companyRef === company.ref);
+      && state.subjects[value.subjectRef]?.companyRef === company.ref && (value.protocolVersion ?? '0.3') === (company.protocolVersion ?? '0.3') && JSON.stringify(value.extensions ?? {}) === JSON.stringify(company.extensions ?? {}));
     requirePap(session?.connected, 'disconnected');
     const approval: ProductOperationApproval = existing ?? {companyRef:company.ref, method:route.method, template:route.template,
       resource:route.resource, sessionRef:session.ref, scopes:[], generation:state.generation};
@@ -507,7 +509,8 @@ export class PapService extends Service {
     const previous = Object.values(snapshot.sessions).filter(session => session.subjectRef === subject.subjectRef && !session.accountSlot);
     // A disconnected session is an owner fence, not a connection failure to repair automatically.
     requirePap(!previous.length || previous.some(session => session.connected), 'disconnected');
-    const session = previous.find(value => value.connected) ?? await engine.openPapSession(subject.subjectRef);
+    const selectedCompany = snapshot.companies[company.companyRef]!;
+    const session = previous.find(value => value.connected && (value.protocolVersion ?? '0.3') === (selectedCompany.protocolVersion ?? '0.3') && JSON.stringify(value.extensions ?? {}) === JSON.stringify(selectedCompany.extensions ?? {})) ?? await engine.openPapSession(subject.subjectRef);
     check(); this.assertCurrentEngine(engine); await (await this.consumer()).assertActive(); check();
     const sessionRef = 'sessionRef' in session ? session.sessionRef : session.ref;
     await engine.store.transaction(state => {
@@ -518,9 +521,9 @@ export class PapService extends Service {
       const current = state.companies[company.companyRef]; requirePap(current, 'discovery_failed');
       for (const raw of publicOperations(state)) {
         const operation = raw as { companyRef: string; operationRef: string; method: string };
-        if (operation.companyRef !== company.companyRef || !['GET', 'HEAD'].includes(operation.method)) continue;
+        if (operation.companyRef !== company.companyRef) continue;
         const { route } = findOperation(state, operation.operationRef);
-        if (route.requiresConsent) continue;
+        if (!isUcpRead(route) && (!['GET','HEAD'].includes(route.method) || route.requiresConsent)) continue;
         state.product ??= { operations: {} };
         state.product.operations[operation.operationRef] = { companyRef: current.ref, method: route.method, template: route.template,
           resource: route.resource, sessionRef, scopes: [], generation: state.generation + 1 };
@@ -556,7 +559,7 @@ export class PapService extends Service {
       const current = this.binding!; const candidate = resolved.binding;
       requirePap(candidate.clientId === current.clientId && candidate.ownerRef === current.ownerRef && candidate.identityRef.storeId === current.identityRef.storeId && candidate.identityRef.identityId === current.identityRef.identityId && candidate.identityRef.did === current.identityRef.did && resolved.redirectUri, 'unsupported_sign_in');
       httpsUrl(resolved.redirectUri); check();
-      return engine.startSignIn(session.subjectRef, { scopes: input.scopes, resource: route.resource, redirectUri: resolved.redirectUri, callbackMode: 'handoff', method: 'direct' });
+      return engine.startSignIn(session.subjectRef, { scopes: input.scopes, accountSlot: session.accountSlot, resource: route.resource, redirectUri: resolved.redirectUri, callbackMode: 'handoff', method: 'direct' });
     }
     if (input.action === 'account/collect') return engine.collectSignIn(input.transactionRef);
     const state = await engine.store.read(); const account = Object.values(state.grants).find(value => value.accountSlot === input.accountSlot) ?? Object.values(state.transactions).find(value => value.accountSlot === input.accountSlot);

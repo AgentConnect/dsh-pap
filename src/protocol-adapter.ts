@@ -22,7 +22,7 @@ export interface ProtocolSignerLease {
 }
 export interface ProtocolIdentityClient {
   registerValidatedTarget(input: { identityRef: Binding['identityRef']; policyRef: string; discovery: {
-    profile: 'pap_session' | 'pap_account'; issuer: string; resource: string; tokenEndpoint?: string; revocationEndpoint?: string;
+    profile: 'pap_session' | 'pap_account'; issuer: string; resource: string; tokenEndpoint?: string; revocationEndpoint?: string; pushedAuthorizationRequestEndpoint?: string;
     companyId: string; metadataDigest: string; expiresAt: number; allowedEndpoints?: string[];
     sources: { resource: string; authorizationServer: string };
   }; requestedScopes: string[] }): Promise<ProtocolSignerLease>;
@@ -41,7 +41,7 @@ export class ProtocolIdentityHost implements PapIdentityHost {
     const discoveryUrl = company.sources[0]!.url;
     const raw = await this.client.registerValidatedTarget({ identityRef: binding.identityRef, policyRef: this.policyRef, discovery: {
       profile: purpose, issuer: company.issuer ?? company.companyId, companyId: company.companyId, resource,
-      tokenEndpoint: company.metadata?.token_endpoint, revocationEndpoint: company.metadata?.revocation_endpoint,
+      tokenEndpoint: company.metadata?.token_endpoint, revocationEndpoint: company.metadata?.revocation_endpoint, pushedAuthorizationRequestEndpoint: company.metadata?.pushed_authorization_request_endpoint,
       metadataDigest: company.metadataDigest, expiresAt: company.expiresAt,
       // Dynamic path parameters are authorized by registering the exact operation URL below.
       allowedEndpoints: [...company.routes.filter(x => !x.template.includes('{')).map(x => htu(x.template)), ...(destination ? [htu(destination)] : [])],

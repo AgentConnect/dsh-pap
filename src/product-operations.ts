@@ -1,5 +1,6 @@
 import { PapError, requirePap } from './errors.js';
 import { httpsUrl, htu, sha256 } from './util.js';
+import { isUcpRead } from './ucp.js';
 import { strictJson } from './strict-json.js';
 import type { Company, HttpResponse, Operation, PapState, ProductOperationApproval, Route } from './types.js';
 import type { PapOperationRequest } from './product-api.js';
@@ -8,7 +9,7 @@ export function operationRef(company: Company, route: Route): string {
   return `op_${sha256(JSON.stringify([company.ref, route.method, route.template, route.resource, route.parameters ?? [], route.channel, ...(route.requiresConsent ? [true] : [])]))}`;
 }
 function supported(company: Company, route: Route): boolean {
-  const reserved = [...company.sources.map(x => x.url), company.metadata?.token_endpoint, company.metadata?.authorization_endpoint, company.metadata?.revocation_endpoint].filter((value): value is string => Boolean(value));
+  const reserved = [...company.sources.map(x => x.url), company.metadata?.token_endpoint, company.metadata?.authorization_endpoint, company.metadata?.revocation_endpoint, company.metadata?.pushed_authorization_request_endpoint].filter((value): value is string => Boolean(value));
   return route.channel !== 'mcp' && !reserved.some(value => htu(value) === htu(route.template.replace(/\{[^{}]+\}/g, '__parameter__')));
 }
 export function findOperation(state: PapState, reference: string): { company: Company; route: Route } {
@@ -27,12 +28,12 @@ export function publicOperations(state: PapState, enabledOnly = false): object[]
     const bytes=route.bodySchema===undefined?0:Buffer.byteLength(JSON.stringify(route.bodySchema));
     const includeSchema=route.bodySchema!==undefined&&bytes<=32768&&schemaBytes+bytes<=262144;
     if(includeSchema)schemaBytes+=bytes;
-    entries.push({ operationRef: reference, companyRef: company.ref, method: route.method, path: new URL(route.template).pathname.replace(/%7b/gi, '{').replace(/%7d/gi, '}'),
+    entries.push({ operationRef: reference, companyRef: company.ref, method: route.method, channel: route.channel, path: new URL(route.template).pathname.replace(/%7b/gi, '{').replace(/%7d/gi, '}'),
       ...(route.operationId?{operationId:route.operationId}:{}),...(includeSchema?{bodySchema:route.bodySchema}:route.bodySchemaUnavailable||route.bodySchema!==undefined?{bodySchemaUnavailable:true}:{}),
       pathParameters: [...route.template.matchAll(/\{([A-Za-z0-9_.-]+)\}/g)].map(x => x[1]),
       queryParameters: (route.parameters ?? []).filter(x => x.in === 'query').map(x => ({ name: x.name, required: x.required })),
       enabled: Boolean(approval), account: approval ? Boolean(state.sessions[approval.sessionRef]?.accountSlot) : false,
-      requiresApproval: !['GET','HEAD'].includes(route.method) || Boolean(route.requiresConsent),
+      requiresApproval: !isUcpRead(route) && (!['GET','HEAD'].includes(route.method) || Boolean(route.requiresConsent)),
       blocked: state.product?.disabled?.includes(reference) ?? false });
   }
   return entries;
@@ -71,7 +72,9 @@ export function prepareDiscoveredOperation(state: PapState, input: PapOperationR
   const body = input.body === undefined ? undefined : JSON.stringify(input.body);
   requirePap(body === undefined || ['POST','PUT','PATCH','DELETE'].includes(route.method) && Buffer.byteLength(body) <= 65536, 'permission_denied');
   return { approval: structuredClone(approval), operation: { url: url.href, method: route.method, resource: route.resource, scopes: [...approval.scopes],
-    ...(body === undefined ? {} : { body, headers: { 'content-type': 'application/json' } }) } };
+    ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
+    ...(body === undefined ? {} : { body }),
+    ...((body !== undefined || input.ifMatch !== undefined) ? {headers: {...(body === undefined ? {} : {'content-type':'application/json'}), ...(input.ifMatch === undefined ? {} : {'if-match':input.ifMatch})}} : {}) } };
 }
 
 const privateFields = /^(?:token|access[_-]?token|refresh[_-]?token|id[_-]?token|authorization|proxy[_-]?authorization|dpop|poppy[_-]?session|private[_-]?key|client[_-]?secret|client[_-]?assertion|code[_-]?verifier|claim[_-]?secret|callbackRef)$/i;
@@ -109,6 +112,6 @@ export function publicResponse(response: HttpResponse, secrets: readonly string[
   requirePap(Number.isSafeInteger(maxBytes) && maxBytes >= 65536 && maxBytes <= 8*1024*1024, 'unsupported_profile');
   const type = response.headers['content-type']?.split(';')[0]?.trim().toLowerCase();
   if (type !== 'application/json' && type !== 'application/problem+json') return { status: response.status, bodyAvailable: false };
-  try { return { status: response.status, body: redact(strictJson(response.body, maxBytes), secrets) }; }
+  try { return { status: response.status, ...(typeof response.headers.etag === 'string' && response.headers.etag.length <= 256 && !secrets.some(secret => secret.length > 0 && response.headers.etag!.includes(secret)) && /^(?:"[A-Za-z0-9._:-]+"|[A-Za-z0-9._:-]+)$/.test(response.headers.etag) ? {etag:response.headers.etag} : {}), body: redact(strictJson(response.body, maxBytes), secrets) }; }
   catch { return { status: response.status, bodyAvailable: false }; }
 }

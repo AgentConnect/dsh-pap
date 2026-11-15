@@ -3,7 +3,7 @@ import { asCooldownKey, assertCooldownElapsed, cooldownError, recordCooldown, re
 import { protocolFailure } from './auth-challenge.js';
 import type { CredentialObservation } from './credential-history.js';
 import { archiveCredentials } from './credential-history.js';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { PapDiscovery } from './discovery.js';
 import { PapError, requirePap, type PapAuthHint } from './errors.js';
 import type { PapHostOptions, PapSigningLease } from './host.js';
@@ -15,9 +15,9 @@ import { httpsUrl, htu, id, isPapLoopbackRedirect, jwtParts, matchedRoute, parse
 function secureEqual(a: unknown, b: string): boolean {
   return typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
-const protectedHeaders = new Set(['authorization','dpop','poppy-session','host','cookie','proxy-authorization','content-length','connection','transfer-encoding']);
-interface WaitContext { subjectRef: string; sessionRef?: string; accountSlot?: string; accountEpoch?: number; allowSignedOut?: boolean; grantRef?: string; grantGeneration?: number; transactionRef?: string }
-interface AccountRequestControl { purpose?: 'token'|'revoke'; scopes: readonly string[]; accountEpoch?: number; sessionRef?: string; grantRef?: string; grantGeneration?: number; transactionRef?: string }
+const protectedHeaders = new Set(['authorization','dpop','poppy-session','poppy-version','poppy-extensions','ucp-agent','signature','signature-input','content-digest','request-id','host','cookie','proxy-authorization','content-length','connection','transfer-encoding']);
+interface WaitContext { pendingTransaction?: boolean; subjectRef: string; sessionRef?: string; accountSlot?: string; accountEpoch?: number; allowSignedOut?: boolean; grantRef?: string; grantGeneration?: number; transactionRef?: string }
+interface AccountRequestControl { purpose?: 'token'|'revoke'|'par'; scopes: readonly string[]; accountEpoch?: number; sessionRef?: string; grantRef?: string; grantGeneration?: number; transactionRef?: string }
 /** Same-process permission fence, never a wire input. */
 export interface PapDispatchControl {
   signal?: AbortSignal;
@@ -56,11 +56,11 @@ export class PapClient {
     requirePap(options.inlineCooldownWaitMs === undefined || Number.isInteger(options.inlineCooldownWaitMs) && options.inlineCooldownWaitMs >= 0 && options.inlineCooldownWaitMs <= 5000, 'permission_denied');
     this.clock = options.clock ?? (() => Date.now());
     this.store = new PapStore(options.stateRoot, options.secretStore, sha256(JSON.stringify(options.binding)));
-    this.discovery = new PapDiscovery(transport, this.clock);
+    this.discovery = new PapDiscovery(transport, this.clock, options.ucpPlatformProfileUrl);
   }
   close(): void { this.closed = true; for (const waiter of this.cooldownWaiters) waiter.controller.abort(new PapError('disconnected')); for (const active of this.abortedSessions.values()) for (const controller of active) controller.abort(); this.options.identityHost.dispose?.(); }
   async recover(): Promise<void> { await this.store.recover(); }
-  async resolvePapCompany(domain: string): Promise<{ companyRef: string; companyId: string; name: string; authMode: Company['authMode']; scopes: string[] }> {
+  async resolvePapCompany(domain: string): Promise<{ companyRef: string; companyId: string; name: string; authMode: Company['authMode']; scopes: string[]; ucpCapabilities?: string[] }> {
     // Failed discovery never commits or erases a previous issuer.
     const discovered = await this.discovery.resolve(domain);
     const company = await this.store.transaction(state => {
@@ -70,7 +70,7 @@ export class PapClient {
       state.companies[discovered.ref] = discovered;
       return discovered;
     });
-    return { companyRef: company.ref, companyId: company.companyId, name: company.name, authMode: company.authMode, scopes: company.scopes };
+    return { companyRef: company.ref, companyId: company.companyId, name: company.name, authMode: company.authMode, scopes: company.scopes, ...(company.ucp ? {ucpCapabilities:company.ucp.capabilities} : {}) };
   }
   async getOrCreatePapUser(companyRef: string, mode: 'regular' | 'anonymous' = 'regular', agent = false): Promise<{ subjectRef: string }> {
     requirePap(mode === 'regular' || mode === 'anonymous', 'permission_denied');
@@ -91,7 +91,8 @@ export class PapClient {
       requirePap(!accountSlot || subject.mode === 'regular', 'permission_denied');
       requirePap(subject.mode !== 'anonymous' || !Object.values(state.sessions).some(x => x.subjectRef === subjectRef), 'permission_denied');
       if (accountSlot) requirePap(Object.values(state.grants).some(x => this.sameUser(state, x.subjectRef, subject) && x.accountSlot === accountSlot && x.status === 'active'), 'reauthorization_required');
-      const session: Session = { ref: id('sesref'), subjectRef, sid: id('ses'), generation: 1, connected: true, ...(accountSlot ? { accountSlot } : {}) };
+      const company = this.company(state, subject.companyRef);
+      const session: Session = { protocolVersion: company.protocolVersion ?? '0.3', extensions: structuredClone(company.extensions ?? {}), ref: id('sesref'), subjectRef, sid: id('ses'), generation: 1, connected: true, ...(accountSlot ? { accountSlot } : {}) };
       state.sessions[session.ref] = session; return { sessionRef: session.ref };
     });
   }
@@ -137,7 +138,7 @@ export class PapClient {
     if (context.accountSlot && context.accountEpoch !== undefined) {
       const slot = state.accountSlots[context.accountSlot]; requirePap(slot && this.sameUser(state, slot.subjectRef, subject) && slot.epoch === context.accountEpoch && slot.signedOut === Boolean(context.allowSignedOut), 'reauthorization_required');
     }
-    if (context.transactionRef) { const transaction = state.transactions[context.transactionRef]; requirePap(transaction?.status === 'exchanging' && transaction.expiresAt > this.clock() && transaction.accountSlot === context.accountSlot && transaction.accountEpoch === context.accountEpoch, 'reauthorization_required'); }
+    if (context.transactionRef) { const transaction = state.transactions[context.transactionRef]; requirePap(transaction?.status === (context.pendingTransaction ? 'pending' : 'exchanging') && transaction.expiresAt > this.clock() && transaction.accountSlot === context.accountSlot && transaction.accountEpoch === context.accountEpoch, 'reauthorization_required'); }
     if (context.grantRef) { const grant = state.grants[context.grantRef]; requirePap(grant && grant.generation === context.grantGeneration && grant.status === (context.allowSignedOut ? 'revocation_pending' : 'refreshing'), 'state_conflict'); }
   }
   private async awaitCooldown(key: string, context: WaitContext): Promise<void> {
@@ -216,7 +217,7 @@ export class PapClient {
     const frozen = structuredClone(operation);
     const headers: Record<string,string> = {};
     for (const [name, value] of Object.entries(frozen.headers ?? {})) { requirePap(!protectedHeaders.has(name.toLowerCase()) && !/[\r\n]/.test(value), 'permission_denied'); headers[name.toLowerCase()] = value; }
-    if (frozen.idempotencyKey) { requirePap(!headers['idempotency-key'] || headers['idempotency-key'] === frozen.idempotencyKey, 'permission_denied'); headers['idempotency-key'] = frozen.idempotencyKey; }
+    if (frozen.idempotencyKey !== undefined) { requirePap(/^[A-Za-z0-9._:-]{1,128}$/.test(frozen.idempotencyKey), 'permission_denied'); requirePap(!headers['idempotency-key'] || headers['idempotency-key'] === frozen.idempotencyKey, 'permission_denied'); headers['idempotency-key'] = frozen.idempotencyKey; }
     let retriedSession = false; let retriedToken = false; let retriedNonce = false;
     let accountContext: { slot: string; epoch: number } | undefined;
     for (;;) {
@@ -232,12 +233,17 @@ export class PapClient {
       const state = await this.store.read(); const session = this.session(state, sessionRef); const subject = this.subject(state, session.subjectRef); const company = this.company(state, subject.companyRef);
       const method = (frozen.method ?? 'GET').toUpperCase(); const url = httpsUrl(frozen.url).href;
       requirePap(/^[A-Z]+$/.test(method), 'unsafe_destination');
-      const reserved = [...company.sources.map(x => x.url), company.metadata?.token_endpoint, company.metadata?.authorization_endpoint, company.metadata?.revocation_endpoint].filter((x): x is string => Boolean(x));
+      const reserved = [...company.sources.map(x => x.url), company.metadata?.token_endpoint, company.metadata?.authorization_endpoint, company.metadata?.revocation_endpoint, company.metadata?.pushed_authorization_request_endpoint].filter((x): x is string => Boolean(x));
       requirePap(!reserved.some(value => htu(value) === htu(url)), 'unsafe_destination');
       const route = company.routes.find(x => x.method === method && matchedRoute(x.template, url)); requirePap(route, 'unsafe_destination');
       requirePap(!frozen.resource || frozen.resource === route.resource, 'unsafe_destination');
       let grant = session.accountSlot ? Object.values(state.grants).find(x => this.sameUser(state, x.subjectRef, subject) && x.accountSlot === session.accountSlot && x.resource === route.resource && ['active','refreshing'].includes(x.status)) : undefined;
-      if (session.accountSlot && !grant) throw new PapError('reauthorization_required');
+      if (session.accountSlot && !grant) {
+        const shared = Object.values(state.grants).find(x => this.sameUser(state, x.subjectRef, subject) && x.accountSlot === session.accountSlot && ['active','refreshing'].includes(x.status));
+        requirePap(shared?.refreshToken && !retriedToken, 'reauthorization_required');
+        await this.refreshAccountGrant(shared.ref, sessionRef, route.resource); retriedToken = true; continue;
+      }
+      if (route.channel === 'ucp') requirePap(session.protocolVersion === '1.0' && session.extensions?.ucp === '1' && company.ucp && this.options.ucpPlatformProfileUrl, 'unsupported_profile');
       if (!session.accountSlot) requirePap(!accountContext, 'reauthorization_required');
       if (grant) {
         this.assertAccountEpoch(state, subject, grant.accountSlot, grant.accountEpoch);
@@ -258,9 +264,17 @@ export class PapClient {
       await this.store.transaction(current => allowed(current));
       const sessionJwt = await lease.signPapSessionRequest({ key: delegation.key, scope: scopeFor(subject), delegation: delegation.compact, clientId: subject.binding.clientId, sid: session.sid, sub: subject.userId, agentId: subject.agentId, httpMethod: method, httpUri: url, accessToken: grant?.accessToken });
       this.checkSessionJwt(sessionJwt, delegation, subject, session, method, url, grant?.accessToken);
-      const sentHeaders: Record<string, string> = { ...headers, 'poppy-session': sessionJwt };
+      const sentHeaders: Record<string, string> = { ...headers, 'poppy-session': sessionJwt, 'poppy-version': session.protocolVersion ?? '0.3' };
+      const extensions = Object.entries(session.extensions ?? {}).sort(([a],[b]) => a.localeCompare(b));
+      if (extensions.length) sentHeaders['poppy-extensions'] = extensions.map(([name,version]) => `${JSON.stringify(name)};v=${JSON.stringify(version)}`).join(', ');
+      if (route.channel === 'ucp') {
+        sentHeaders['ucp-agent'] = `profile=${JSON.stringify(company.ucp!.platformProfileUrl)}`;
+        sentHeaders['request-id'] = randomUUID();
+        if (!['GET','HEAD'].includes(method) && !route.operationId?.match(/^(search_catalog|lookup_catalog|get_product)$/)) requirePap(typeof frozen.idempotencyKey === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(frozen.idempotencyKey), 'permission_denied');
+      }
       let dpopLease: PapSigningLease | undefined;
       if (grant) {
+        if (route.channel === 'ucp') requirePap(grant.tokenType === 'Bearer', 'unsupported_profile');
         sentHeaders.authorization = `${grant.tokenType} ${grant.accessToken}`;
         if (grant.tokenType === 'DPoP') {
           requirePap(grant.dpopKey, 'credential_unavailable');
@@ -305,6 +319,17 @@ export class PapClient {
       if (response.status >= 300 && response.status < 400) throw new PapError('redirect_blocked');
       if (response.status === 429) { const limited = await this.store.read(); throw cooldownError(limited, cooldownKey, this.clock()); }
       const failure = protocolFailure(response, company, route.resource, grant?.tokenType); const error = failure.code;
+      if (error === 'version_unsupported') {
+        requirePap(!retriedSession, 'version_unsupported'); retriedSession = true;
+        await this.resolvePapCompany(company.discoveryOrigin ? new URL(company.discoveryOrigin).host : company.domain);
+        await this.store.transaction(current => {
+          const value = this.session(current, sessionRef), next = this.company(current, subject.companyRef);
+          requirePap(value.generation === session.generation && (next.protocolVersion ?? '0.3') !== (value.protocolVersion ?? '0.3'), 'version_unsupported');
+          value.sid = id('ses'); value.protocolVersion = next.protocolVersion ?? '0.3'; value.extensions = structuredClone(next.extensions ?? {}); value.generation++;
+        });
+        if (control.singleOperation) throw new PapError('version_unsupported');
+        continue;
+      }
       if (error === 'session_ended') {
         if (retriedSession) throw new PapError('session_ended'); retriedSession = true;
         await this.store.transaction(current => { const value = this.session(current, sessionRef); requirePap(value.generation === session.generation, 'state_conflict'); value.sid = id('ses'); value.generation++; });
@@ -338,7 +363,7 @@ export class PapClient {
     requirePap(nonce.length > 0 && nonce.length <= 1024 && !/[\r\n]/.test(nonce), 'oauth_error');
     await this.store.transaction(state => { state.nonces[target] = nonce; });
   }
-  async startSignIn(subjectRef: string, input: { scopes: string[]; resource: string; redirectUri: string; callbackMode: 'handoff' | 'loopback'; method?: 'direct' | 'device' }): Promise<{ transactionRef: string; authorizationUrl: string; accountSlot: string }> {
+  async startSignIn(subjectRef: string, input: { scopes: string[]; resource: string; redirectUri: string; callbackMode: 'handoff' | 'loopback'; method?: 'direct' | 'device'; accountSlot?: string }): Promise<{ transactionRef: string; authorizationUrl: string; accountSlot: string }> {
     requirePap(input.method === undefined || input.method === 'direct', 'unsupported_sign_in');
     await this.ensureCompanyFresh(subjectRef);
     const state = await this.store.read(); const subject = this.subject(state, subjectRef); const company = this.company(state, subject.companyRef);
@@ -346,7 +371,9 @@ export class PapClient {
     const metadata = company.metadata;
     requirePap(metadata.grant_types_supported.includes('authorization_code') && metadata.grant_types_supported.includes('refresh_token') && metadata.revocation_endpoint && metadata.authorization_endpoint && metadata.token_endpoint_auth_methods_supported?.includes('private_key_jwt') && metadata.code_challenge_methods_supported?.includes('S256'), 'unsupported_sign_in');
     requirePap(!metadata.dpop_signing_alg_values_supported?.length || metadata.dpop_signing_alg_values_supported.includes('ES256'), 'unsupported_sign_in');
-    const scope = [...new Set(input.scopes)].sort();
+    const retained = input.accountSlot ? Object.values(state.grants).filter(grant => this.sameUser(state, grant.subjectRef, subject) && grant.accountSlot === input.accountSlot && grant.status === 'active').flatMap(grant => grant.scope) : [];
+    if (input.accountSlot) this.assertAccountEpoch(state, subject, input.accountSlot, state.accountSlots[input.accountSlot]?.epoch ?? -1);
+    const scope = [...new Set([...retained,...input.scopes])].sort();
     requirePap(scope.length > 0 && scope.every(x => company.scopes.includes(x) && /^[\x21\x23-\x5b\x5d-\x7e]+$/.test(x)) && company.routes.some(x => x.resource === input.resource), 'insufficient_scope');
     const lease = await this.lease(subject, 'pap_account', input.resource, undefined, scope); const identity = await lease.getOAuthClientIdentity();
     const client = httpsUrl(subject.binding.clientId);
@@ -366,6 +393,14 @@ export class PapClient {
     }
     const authorize = httpsUrl(metadata.authorization_endpoint); const params = authorize.searchParams;
     for (const [key,value] of Object.entries({ response_type: 'code', client_id: tx.clientId, redirect_uri: tx.redirectUri, scope: scope.join(' '), state: tx.state, code_challenge: sha256(tx.verifier), code_challenge_method: 'S256', resource: tx.resource })) params.set(key,value);
+    if (input.callbackMode === 'handoff') params.set('prompt', 'consent');
+    if (metadata.pushed_authorization_request_endpoint) {
+      requirePap(tx.dpopKey, 'unsupported_sign_in');
+      const pushed = await this.tokenRequest(subject, company, tx.resource, tx.accountSlot, tx.dpopKey, Object.fromEntries(params), {purpose:'par',scopes:tx.scope,accountEpoch:tx.accountEpoch,transactionRef:tx.ref});
+      const result = parseJson(pushed);
+      requirePap(pushed.status === 201 && typeof result.request_uri === 'string' && result.request_uri.length > 0 && typeof result.expires_in === 'number' && result.expires_in > 0, 'oauth_error');
+      authorize.search = ''; authorize.searchParams.set('client_id', tx.clientId); authorize.searchParams.set('request_uri', result.request_uri);
+    } else requirePap(!metadata.require_pushed_authorization_requests, 'unsupported_sign_in');
     // This is user-only browser data. It must not be emitted to an LLM tool response.
     return { transactionRef: tx.ref, authorizationUrl: authorize.href, accountSlot: tx.accountSlot };
   }
@@ -424,18 +459,18 @@ export class PapClient {
   }
   private async tokenRequest(subject: Subject, company: Company, resource: string, accountSlot: string, key: KeyRef | undefined, fields: Record<string,string>, control: AccountRequestControl): Promise<HttpResponse> {
     requirePap(company.issuer, 'unsupported_sign_in'); const cooldownKey = asCooldownKey(company.companyId, company.issuer);
-    const context: WaitContext = { subjectRef: subject.ref, sessionRef: control.sessionRef, accountSlot, accountEpoch: control.accountEpoch, allowSignedOut: control.purpose === 'revoke', grantRef: control.grantRef, grantGeneration: control.grantGeneration, transactionRef: control.transactionRef };
+    const context: WaitContext = { pendingTransaction: control.purpose === 'par', subjectRef: subject.ref, sessionRef: control.sessionRef, accountSlot, accountEpoch: control.accountEpoch, allowSignedOut: control.purpose === 'revoke', grantRef: control.grantRef, grantGeneration: control.grantGeneration, transactionRef: control.transactionRef };
     let retriedNonce = false;
     for (;;) {
       await this.awaitCooldown(cooldownKey, context); await this.ensureCompanyFresh(subject.ref);
       const latest = await this.store.read(); const currentSubject = this.subject(latest, subject.ref); const currentCompany = this.company(latest, currentSubject.companyRef); this.assertWaitActive(latest, context);
       requirePap(currentCompany.issuer === company.issuer && currentCompany.routes.some(route => route.resource === resource), 'namespace_changed');
       if (control.purpose !== 'revoke') { const currentScopes = control.grantRef ? latest.grants[control.grantRef]?.scope : control.transactionRef ? latest.transactions[control.transactionRef]?.scope : undefined; requirePap(currentScopes && control.scopes.every(scope => currentScopes.includes(scope)), 'insufficient_scope'); }
-      const target = control.purpose === 'revoke' ? currentCompany.metadata?.revocation_endpoint : currentCompany.metadata?.token_endpoint; requirePap(target, 'unsupported_sign_in'); httpsUrl(target);
+      const target = control.purpose === 'revoke' ? currentCompany.metadata?.revocation_endpoint : control.purpose === 'par' ? currentCompany.metadata?.pushed_authorization_request_endpoint : currentCompany.metadata?.token_endpoint; requirePap(target, 'unsupported_sign_in'); httpsUrl(target);
       const lease = await this.lease(currentSubject, 'pap_account', resource, target, control.scopes);
       await this.store.transaction(state => { this.assertWaitActive(state, context); assertCooldownElapsed(state, cooldownKey, this.clock()); });
       const assertion = await lease.signOAuthClientAssertion(); const parts = jwtParts(assertion);
-      requirePap(parts.payload.iss === subject.binding.clientId && parts.payload.sub === subject.binding.clientId && parts.payload.aud === company.issuer, 'permission_denied');
+      requirePap(parts.payload.iss === subject.binding.clientId && parts.payload.sub === subject.binding.clientId && parts.payload.aud === company.issuer && typeof parts.payload.iat === 'number' && typeof parts.payload.exp === 'number' && parts.payload.exp > this.clock()/1000 && parts.payload.exp-parts.payload.iat <= 300, 'permission_denied');
       const body = new URLSearchParams({ ...fields, client_id: subject.binding.clientId, client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer', client_assertion: assertion }).toString();
       const headers: Record<string,string> = { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' };
       if (key) {
@@ -465,9 +500,14 @@ export class PapClient {
       return result;
     }
   }
-  async refreshAccountGrant(grantRef: string, sessionRef?: string): Promise<void> {
-    const prior = this.refreshFlights.get(grantRef); if (prior) return prior;
-    const flight = this.refresh(grantRef, sessionRef); this.refreshFlights.set(grantRef, flight);
+  async refreshAccountGrant(grantRef: string, sessionRef?: string, resource?: string): Promise<void> {
+    const prior = this.refreshFlights.get(grantRef);
+    if (prior) {
+      await prior;
+      if (!resource || (await this.store.read()).grants[grantRef]?.resource === resource) return;
+      return this.refreshAccountGrant(grantRef, sessionRef, resource);
+    }
+    const flight = this.refresh(grantRef, sessionRef, resource); this.refreshFlights.set(grantRef, flight);
     try { await flight; } finally { if (this.refreshFlights.get(grantRef) === flight) this.refreshFlights.delete(grantRef); }
   }
   private async waitForRefresh(grantRef: string, accountEpoch: number, refreshingGeneration: number, joinLocal = true): Promise<void> {
@@ -483,7 +523,7 @@ export class PapClient {
     }
     throw new PapError('reauthorization_required');
   }
-  private async refresh(grantRef: string, sessionRef?: string): Promise<void> {
+  private async refresh(grantRef: string, sessionRef?: string, resource?: string): Promise<void> {
     const claim = await this.store.transaction(state => {
       const grant = state.grants[grantRef]; requirePap(grant && grant.refreshToken, 'reauthorization_required');
       this.assertAccountEpoch(state, this.subject(state, grant.subjectRef), grant.accountSlot, grant.accountEpoch);
@@ -491,12 +531,16 @@ export class PapClient {
       requirePap(grant.status === 'active', 'reauthorization_required');
       grant.status = 'refreshing'; grant.generation++; return { claimed: grant };
     });
-    if (claim.waiting) { await this.waitForRefresh(grantRef, claim.waiting.accountEpoch, claim.waiting.generation, false); return; }
+    if (claim.waiting) {
+      await this.waitForRefresh(grantRef, claim.waiting.accountEpoch, claim.waiting.generation, false);
+      if (resource && (await this.store.read()).grants[grantRef]?.resource !== resource) return this.refresh(grantRef, sessionRef, resource);
+      return;
+    }
     const claimed = claim.claimed!;
     const state = await this.store.read(); const subject = this.subject(state, claimed.subjectRef); const company = this.company(state, subject.companyRef);
     try {
-      const response = await this.tokenRequest(subject, company, claimed.resource, claimed.accountSlot, claimed.dpopKey, { grant_type: 'refresh_token', refresh_token: claimed.refreshToken!, resource: claimed.resource, scope: claimed.scope.join(' ') }, { scopes: claimed.scope, accountEpoch: claimed.accountEpoch, sessionRef, grantRef: claimed.ref, grantGeneration: claimed.generation });
-      const next = this.parseGrant(response, claimed, claimed.dpopKey, claimed);
+      const response = await this.tokenRequest(subject, company, resource ?? claimed.resource, claimed.accountSlot, claimed.dpopKey, { grant_type: 'refresh_token', refresh_token: claimed.refreshToken!, resource: resource ?? claimed.resource, scope: claimed.scope.join(' ') }, { scopes: claimed.scope, accountEpoch: claimed.accountEpoch, sessionRef, grantRef: claimed.ref, grantGeneration: claimed.generation });
+      const next = this.parseGrant(response, {...claimed,resource:resource ?? claimed.resource}, claimed.dpopKey, claimed);
       const committed = await this.store.transaction(current => {
         archiveCredentials(current, [claimed.accessToken,claimed.refreshToken,next.accessToken,next.refreshToken]);
         const grant = current.grants[grantRef];
