@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import https from 'node:https';
+import { execFileSync } from 'node:child_process';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -10,12 +12,13 @@ import ManagerRemote from '../src/management-remote.js';
 import * as toolPlugin from '../src/tools.js';
 import { PAP_CONSUMER, PAP_MANAGER, PAP_TOOLS, type PapHostConsumer, type ProductResult } from '../src/product-api.js';
 import type { ProtocolIdentityClient, ProtocolKeyReference, ProtocolSignerLease } from '../src/protocol-adapter.js';
-import type { Company, KeyRef, KeyScope } from '../src/types.js';
+import type { Company, HttpTransport, KeyRef, KeyScope } from '../src/types.js';
 import { PapError, requirePap } from '../src/errors.js';
 import { binding, FixtureHost, FixtureTransport, jsonResponse, secrets } from './fixture.js';
 import { publicResponse } from '../src/product-operations.js';
 import { publicResult } from '../src/plugin.js';
 import { PapClient } from '../src/client.js';
+import { SafeHttpsTransport } from '../src/network.js';
 import type { PolicyClient, PolicyClassification } from '../src/protocol-policy.js';
 
 type Value = Record<string, any>;
@@ -23,7 +26,7 @@ function value(result: ProductResult): Value { assert.equal(result.ok, true, res
 function error(result: ProductResult, code: string) { assert.equal(result.ok,false); if(result.ok)throw new Error('Expected refusal'); assert.equal(result.error.code,code); assert(Object.keys(result.error).every(key=>['code','phase','businessRequest','httpStatus','retryAfterSeconds','approval'].includes(key))); }
 
 /** Unit C boundary with real fixture cryptography. This is not evidence for the C factory. */
-async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?: FixtureTransport['mode']; missingConfig?: boolean; blockedSecrets?: boolean; missingFactory?: boolean; autoConnect?: boolean; approvalWaitMs?: number; businessConsumers?: string[] } = {}) {
+async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?: FixtureTransport['mode']; missingConfig?: boolean; blockedSecrets?: boolean; missingFactory?: boolean; autoConnect?: boolean; approvalWaitMs?: number; businessConsumers?: string[]; transport?: HttpTransport; ucpPlatformProfileUrl?: string } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'pap-product-unit-'));
   const ctx = new Context(); const host = new FixtureHost(); const transport = new FixtureTransport(); transport.mode = options.mode ?? 'none';
   const tools = new Map<string, any>(); const targetRefs = new WeakSet<object>(); const contexts: Context[] = []; const namespaces: string[] = []; let providerGeneration = 1; let registerCount = 0; let claimCount = 0; let disposedCallbacks = 0; let response: { state: string; iss: string; code: string } | undefined;
@@ -132,14 +135,14 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   });
   let pauseKey: { entered(): void; gate: Promise<void> } | undefined;
   const spySecrets = { getEncryptionKey: async (namespace: string) => { namespaces.push(namespace); const pause = pauseKey; pauseKey = undefined; if (pause) { pause.entered(); await pause.gate; } return secrets.getEncryptionKey(); }, getOrCreateEncryptionKey: async (namespace: string) => { namespaces.push(namespace); return secrets.getOrCreateEncryptionKey(); } };
-  ctx.provide('papHost', { secrets: options.blockedSecrets ? { getEncryptionKey: async () => { throw new PapError('credential_unavailable'); }, getOrCreateEncryptionKey: async () => { throw new PapError('credential_unavailable'); } } : spySecrets, transport });
+  ctx.provide('papHost', { secrets: options.blockedSecrets ? { getEncryptionKey: async () => { throw new PapError('credential_unavailable'); }, getOrCreateEncryptionKey: async () => { throw new PapError('credential_unavailable'); } } : spySecrets, transport: options.transport ?? transport });
   ctx.provide('tools', { register(definition: any) { tools.set(definition.name, definition); } });
   ctx.provide('typert', { register() { return () => {}; } });
   await ctx.plugin(Loader, {}); const loader = ctx.get('loader') as Loader;
   const modules: Record<string, unknown> = { [PAP_CONSUMER]: plugin, [PAP_MANAGER]: ManagerRemote, [PAP_TOOLS]: toolPlugin, "example/shop": { apply() {} } };
   loader.import = async name => { assert(Object.hasOwn(modules, name)); return modules[name]; };
   const config = options.autoConnect ? { enabled: true, autoConnect: true, approvalWaitMs: options.approvalWaitMs ?? 2000, approvalPollMs: 10 } : options.missingConfig ? { enabled: true } : { enabled: options.enabled ?? true, stateRoot: root, policyRef: 'host-approved', keyringService: 'pap-isolated-unit-never-created' };
-  await loader.create({ name: PAP_CONSUMER, config: {...config,businessConsumers:options.businessConsumers ?? []} });
+  await loader.create({ name: PAP_CONSUMER, config: {...config,businessConsumers:options.businessConsumers ?? [],ucpPlatformProfileUrl:options.ucpPlatformProfileUrl} });
   if (options.businessConsumers) await loader.create({name:"example/shop"});
   await loader.create({ name: PAP_MANAGER }); await loader.create({ name: PAP_TOOLS }); await loader.await();
   const service = ctx.pap; const manager = ctx.get('papManager') as unknown as InstanceType<typeof ManagerRemote>;
@@ -170,6 +173,118 @@ async function accountConnection(f:Awaited<ReturnType<typeof fixture>>) {
   value(await f.manager.manage({action:'operation/enable',operationRef:operation.operationRef,sessionRef:account.sessionRef,scopes:['orders:read']}));
   return {...connectedState,pending,account,engine:(f.service as unknown as {client:PapClient}).client};
 }
+
+test('PAP 1.0 business client interoperates with an independent HTTPS UCP Catalog and Cart peer', async t => {
+  const root=await mkdtemp(join(tmpdir(),'pap-ucp-peer-'));
+  const key=join(root,'tls.key'),cert=join(root,'tls.crt');
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-days','1',
+    '-subj','/CN=merchant.test','-addext','subjectAltName=DNS:merchant.test,DNS:platform.test'],{stdio:'ignore'});
+  const origin='https://merchant.test',platform='https://platform.test/.well-known/ucp',version='2026-08-25';
+  const spec=`https://ucp.dev/${version}`;
+  const capabilities={
+    'dev.ucp.shopping.catalog.search':[{version,spec:spec+'/specification/shopping/catalog/',schema:spec+'/schemas/shopping/catalog_search.json'}],
+    'dev.ucp.shopping.cart':[{version,spec:spec+'/specification/shopping/cart/',schema:spec+'/schemas/shopping/cart.json'}],
+  };
+  const shopping={version,transport:'rest',spec:spec+'/specification/overview/',schema:spec+'/services/shopping/rest.openapi.json'};
+  const organization={name:'Independent UCP peer',domain:'merchant.test'};
+  const ca=await readFile(cert);
+  const create={line_items:[{item:{id:'variant_tea'},quantity:1}]};
+  const replace={line_items:[{id:'line_tea',item:{id:'variant_tea'},quantity:2}]};
+  const createKey='7a66afff-4d4a-4d28-9dfb-247e7e72f7f1';
+  const replaceKey='7a66afff-4d4a-4d28-9dfb-247e7e72f7f2';
+  const staleKey='7a66afff-4d4a-4d28-9dfb-247e7e72f7f3';
+  const cart=(quantity:number)=>{
+    const totals=[{type:'subtotal',display_text:'Subtotal',amount:800*quantity},{type:'total',display_text:'Total',amount:800*quantity}];
+    return {ucp:{version,status:'success',capabilities},id:'cart_tea',currency:'USD',
+      line_items:[{id:'line_tea',item:{id:'variant_tea',title:'Tea',price:800},quantity,totals}],totals};
+  };
+  const stale={ucp:{version,status:'error'},messages:[{type:'error',code:'stale_cart',content:'Cart has changed.'}]};
+  const calls:string[]=[],discovery:string[]=[],requestIds=new Set<string>();
+  let etag='"cart-v1"';
+  let peerFailure:unknown;
+  const server=https.createServer({key:await readFile(key),cert:ca},async(request,response)=>{
+    const send=(status:number,body:unknown,etag?:string)=>{
+      response.writeHead(status,{'content-type':'application/json',...(etag?{etag}:{})});
+      response.end(JSON.stringify(body));
+    };
+    try{
+      const path=request.url??'';
+      if(!path.startsWith('/shopping/')){
+        assert(!request.headers['poppy-session']&&!request.headers.authorization);
+        discovery.push(request.headers.host+path);
+        if(request.headers.host==='platform.test'&&path==='/.well-known/ucp')
+          return send(200,{ucp:{version,capabilities,payment_handlers:{},
+            services:{'dev.ucp.shopping':[shopping]}}});
+        if(path==='/.well-known/poppy.json')
+          return send(200,{protocol_version:'0.3',organization,supported_versions:{'1.0':origin+'/poppy/1.0.json'}});
+        if(path==='/poppy/1.0.json')return send(200,{protocol_version:'1.0',organization,extensions:{ucp:[{version:'1'}]}});
+        if(path==='/.well-known/ucp')return send(200,{ucp:{version,capabilities,payment_handlers:{},
+          services:{'dev.ucp.shopping':[{...shopping,endpoint:origin+'/shopping'}]}}});
+        return send(404,{});
+      }
+      calls.push(request.method+' '+path);
+      assert.equal(request.headers['poppy-version'],'1.0');
+      assert.equal(request.headers['poppy-extensions'],'"ucp";v="1"');
+      assert.equal(request.headers['ucp-agent'],`profile="${platform}"`);
+      assert.equal(typeof request.headers['poppy-session'],'string');
+      assert.equal(request.headers.authorization,undefined);
+      assert.equal(request.headers['content-type'],'application/json');
+      const requestId=request.headers['request-id'];
+      assert(typeof requestId==='string'&&/^[0-9a-f-]{36}$/.test(requestId)&&!requestIds.has(requestId));
+      requestIds.add(requestId);
+      const chunks:Buffer[]=[];
+      for await(const chunk of request)chunks.push(chunk);
+      const body=JSON.parse(Buffer.concat(chunks).toString());
+      if(path==='/shopping/catalog/search'){
+        assert.equal(request.method,'POST');assert.deepEqual(body,{query:'tea',context:{country:'US'}});
+        assert.equal(request.headers['idempotency-key'],undefined);
+        const price={amount:800,currency:'USD'},description={plain:'Loose leaf tea'};
+        return send(200,{ucp:{version,status:'success',capabilities},products:[{id:'product_tea',title:'Tea',description,
+          price_range:{min:price,max:price},variants:[{id:'variant_tea',title:'Tea',description,price}]}]});
+      }
+      if(path==='/shopping/carts'){
+        assert.equal(request.method,'POST');assert.deepEqual(body,create);
+        assert.equal(request.headers['idempotency-key'],createKey);
+        return send(201,cart(1),etag);
+      }
+      assert.equal(path,'/shopping/carts/cart_tea');assert.equal(request.method,'PUT');
+      assert.deepEqual(body,replace);
+      assert.equal(request.headers['if-match'],'"cart-v1"');
+      if(request.headers['if-match']!==etag){
+        assert.equal(request.headers['idempotency-key'],staleKey);
+        return send(412,stale);
+      }
+      assert.equal(request.headers['idempotency-key'],replaceKey);
+      etag='"cart-v2"';
+      return send(200,cart(2),etag);
+    }catch(error){peerFailure=error;send(400,{});}
+  });
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
+  const port=(server.address() as {port:number}).port;
+  const transport=new SafeHttpsTransport({ca,privateOrigins:[origin,'https://platform.test'],
+    portOverrides:{[origin]:port,'https://platform.test':port},lookup:async()=>[{address:'127.0.0.1',family:4}]});
+  const f=await fixture(t,{autoConnect:true,businessConsumers:['example/shop'],transport,ucpPlatformProfileUrl:platform});
+  f.policy.set('write','allow');
+  const context=[...f.loader.entries()].find(entry=>entry.options.name==='example/shop')!.fiber!.ctx;
+  const business=f.service.acquireBusiness(context);
+  const company=value(await business.connect('merchant.test'));
+  const operations=(value(await business.operations()) as unknown as Value[]).filter(op=>op.companyRef===company.company.companyRef);
+  const ref=(id:string)=>operations.find(op=>op.channel==='ucp'&&op.operationId===id)!.operationRef;
+  const catalog=value(await business.request({operationRef:ref('search_catalog'),body:{query:'tea',context:{country:'US'}}}));
+  assert.equal(catalog.status,200);assert.equal(catalog.body.products[0].variants[0].id,'variant_tea');
+  const added=value(await business.request({operationRef:ref('create_cart'),body:create,idempotencyKey:createKey}));
+  assert.deepEqual(added,{status:201,etag:'"cart-v1"',body:cart(1)});
+  const update={operationRef:ref('update_cart'),path:{id:added.body.id},body:replace,ifMatch:added.etag};
+  assert.deepEqual(value(await business.request({...update,idempotencyKey:replaceKey})),{status:200,etag:'"cart-v2"',body:cart(2)});
+  const failure=value(await business.request({...update,idempotencyKey:staleKey}));
+  assert.deepEqual(failure,{status:412,body:stale});
+  assert.equal(peerFailure,undefined);
+  assert(discovery.includes('merchant.test/poppy/1.0.json')&&discovery.includes('merchant.test/.well-known/ucp')
+    &&discovery.includes('platform.test/.well-known/ucp'));
+  assert.deepEqual(calls,['POST /shopping/catalog/search','POST /shopping/carts','PUT /shopping/carts/cart_tea','PUT /shopping/carts/cart_tea']);
+});
 
 test('PAP product real Loader: disabled/unconfigured do not access secrets or network', async t => {
   const f = await fixture(t, { enabled: false }); assert.equal(value(await f.manager.status()).state, 'disabled');

@@ -93,6 +93,17 @@ PAP Connections settings section; shared protocol permissions remain in Identity
 
 ## Evidence boundary
 
+The PAP 1.0 UCP component check uses a separately implemented HTTPS merchant
+peer and a platform profile. Through the Loader-installed PAP business API it
+exercises alternate discovery, Catalog POST, Cart create and replacement, and
+a stale ETag response without replay. TLS, discovery, request and response
+handling are real. The merchant and signer are test fixtures, and this check
+does not cover a public merchant or an awiki.me identity.
+
+```sh
+node --import tsx --test --test-name-pattern='independent HTTPS UCP' tests/product.test.ts
+```
+
 PAP-S02 supplements real root-to-subdomain discovery with explicit bounded response
 faults after actual HTTPS responses: a six-hop redirect loop, an HTTP target,
 an HTTPS private-address target, an inconsistent Company, an oversized single
