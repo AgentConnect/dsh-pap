@@ -31,7 +31,8 @@ export class PapDiscovery {
     }
     requirePap(response?.status === 200 && url.pathname === '/.well-known/poppy.json' && !url.search, 'discovery_failed');
     const doc = parseJson(response);
-    requirePap(doc.protocol_version === '1.0', 'unsupported_profile');
+    requirePap(typeof doc.protocol_version === 'string' && /^1\.[0-9]+$/.test(doc.protocol_version), 'unsupported_profile');
+    // The Company may advertise a newer compatible minor; this client sends 1.0.
     const protocolVersion = '1.0' as const;
     const extensions: Record<string,string> = {};
     if (doc.extensions !== undefined && this.platformProfileUrl) {

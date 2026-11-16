@@ -11,10 +11,10 @@ import {jwtParts} from '../src/util.js';
 const origin='https://shop.example';
 const platformUrl='https://agent.example/ucp-platform';
 const profile=(endpoint?:string)=>({ucp:{version:UCP_VERSION,payment_handlers:{},services:endpoint?{'dev.ucp.shopping':[{transport:'rest',version:UCP_VERSION,endpoint}]}:{},capabilities:Object.fromEntries(['catalog.search','catalog.lookup','cart','checkout','order'].map(name=>[`dev.ucp.shopping.${name}`,[{version:UCP_VERSION}]]))}});
-function fixture(){
+function fixture(protocolVersion='1.0'){
   const transport=new FixtureTransport();
   transport.override=url=>{
-    if(url.endsWith('/poppy.json'))return jsonResponse(url,{protocol_version:'1.0',organization:{name:'Shop',domain:'shop.example'},extensions:{ucp:[{version:'1'}]},apis:[{type:'openapi',url:`${origin}/openapi.json`}]});
+    if(url.endsWith('/poppy.json'))return jsonResponse(url,{protocol_version:protocolVersion,organization:{name:'Shop',domain:'shop.example'},extensions:{ucp:[{version:'1'}]},apis:[{type:'openapi',url:`${origin}/openapi.json`}]});
     if(url===`${origin}/.well-known/ucp`)return jsonResponse(url,profile(`${origin}/ucp/v1`));
     if(url===platformUrl)return jsonResponse(url,profile());
     if(url.includes('/.well-known/oauth-protected-resource/'))return jsonResponse(url,{},404);
@@ -37,7 +37,7 @@ test('PAP 1.0 discovery negotiates the configured product profile',async()=>{
   const plain=await new PapDiscovery(transport).resolve('shop.example');assert.equal(plain.protocolVersion,'1.0');assert(!plain.ucp);assert(!plain.routes.some(r=>r.channel==='ucp'));
 });
 test('PAP rejects retired or unknown versions without following an alternate',async()=>{
-  for(const version of ['0.3','1.1']){
+  for(const version of ['0.3','1.x','2.0']){
     const transport=fixture();
     transport.override=url=>jsonResponse(url,{protocol_version:version,supported_versions:{'1.0':`${origin}/poppy/1.0.json`},organization:{name:'Shop',domain:'shop.example'}});
     await assert.rejects(new PapDiscovery(transport,()=>Date.now(),platformUrl).resolve('shop.example'),{code:'unsupported_profile'});
@@ -45,7 +45,7 @@ test('PAP rejects retired or unknown versions without following an alternate',as
   }
 });
 test('Session pins version and extension headers and protects caller overrides',async t=>{
-  const f=await setup(t);await f.client.dispatchPap(f.sessionRef,{url:`${origin}/ucp/v1/catalog/search`,method:'POST',body:'{}'});
+  const f=await setup(t,fixture('1.1'));await f.client.dispatchPap(f.sessionRef,{url:`${origin}/ucp/v1/catalog/search`,method:'POST',body:'{}'});
   const sent=f.transport.calls.at(-1)!.options!.headers!;
   assert.equal(sent['poppy-version'],'1.0');assert.equal(sent['poppy-extensions'],'"ucp";v="1"');assert.equal(sent['ucp-agent'],`profile="${platformUrl}"`);
   for(const header of ['Poppy-Version','Poppy-Extensions','UCP-Agent','Signature','Signature-Input','Content-Digest'])await assert.rejects(f.client.dispatchPap(f.sessionRef,{url:`${origin}/api/cart`,headers:{[header]:'bad'}}));
