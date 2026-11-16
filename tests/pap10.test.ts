@@ -147,3 +147,26 @@ test('service PRM must match its exact resource rather than broad origin metadat
   const transport=fixture(),prior=transport.override!;transport.override=(url,options)=>url===`${origin}/.well-known/oauth-protected-resource/ucp/v1`?jsonResponse(url,{resource:origin}):prior(url,options);
   await assert.rejects(new PapDiscovery(transport,()=>Date.now(),platformUrl).resolve('shop.example'));
 });
+
+test('legacy Company aliases retain the buyer ID while opening a current-version Session',async t=>{
+  const f=await setup(t);
+  const before=await f.client.store.read();
+  const original=before.subjects[f.subjectRef]!;
+  const current=original.companyRef;
+  await f.client.store.transaction(state=>{
+    const legacy={...state.companies[current]!,ref:'legacy-company-alias',generation:0};
+    delete (legacy as Partial<typeof legacy>).protocolVersion;
+    delete legacy.ucp;
+    state.companies[legacy.ref]=legacy;
+    state.subjects[f.subjectRef]!.companyRef=legacy.ref;
+    delete (state.sessions[f.sessionRef] as Partial<typeof state.sessions[string]>).protocolVersion;
+  });
+  const next=await f.client.getOrCreatePapUser(current);
+  assert.notEqual(next.subjectRef,f.subjectRef);
+  const session=await f.client.openPapSession(next.subjectRef);
+  const state=await f.client.store.read();
+  assert.equal(state.subjects[next.subjectRef]!.userId,original.userId);
+  assert.equal(state.subjects[f.subjectRef]!.companyRef,'legacy-company-alias');
+  assert.equal(state.sessions[session.sessionRef]!.protocolVersion,'1.0');
+  assert.equal(state.sessions[f.sessionRef]!.protocolVersion,undefined);
+});

@@ -76,7 +76,7 @@ export class PapClient {
     requirePap(mode === 'regular' || mode === 'anonymous', 'permission_denied');
     return this.store.transaction(state => {
       const company = this.company(state, companyRef);
-      let subject = Object.values(state.subjects).find(x => x.companyId === company.companyId && sameBinding(x, this.options) && mode !== 'anonymous' && x.mode === mode && Boolean(x.agentId) === agent);
+      let subject = Object.values(state.subjects).find(x => x.companyRef === companyRef && x.companyId === company.companyId && sameBinding(x, this.options) && mode !== 'anonymous' && x.mode === mode && Boolean(x.agentId) === agent);
       if (!subject) {
         const sameUser = mode === 'regular' ? Object.values(state.subjects).find(x => x.companyId === company.companyId && sameBinding(x, this.options) && x.mode === 'regular') : undefined;
         subject = { ref: id('subj'), companyRef, companyId: company.companyId, binding: this.options.binding, mode, userId: sameUser?.userId ?? id('usr'), ...(agent ? { agentId: id('agt') } : {}) };
