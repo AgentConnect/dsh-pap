@@ -1,7 +1,7 @@
 {
   "name": "@awiki/dsh-pap",
-  "version": "0.2.0",
-  "description": "Local-custody PAP 0.3 client for DeepSeek Harness",
+  "version": "0.2.1",
+  "description": "Local-custody PAP 1.0 client for DeepSeek Harness",
   "type": "module",
   "license": "Apache-2.0",
   "main": "lib/index.js",
