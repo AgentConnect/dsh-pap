@@ -29,12 +29,14 @@ export function apply(ctx: Context): void {
     execute: async (_args, execution) => { agent(execution); return facade.status(); } });
   register({ name: 'pap_operations', description: '列出 PAP 操作及 opaque operationRef。域名模式返回所有已发现操作：permission 表示统一规则的 allow/ask/deny；requiresApproval=true 时 pap_request 自动弹窗，只批准本次请求，不改持续规则；blocked=true 表示规则禁止或用户明确禁用。空列表先用 pap_connect({domain})，不要编造引用或直接 curl 业务接口。no_as 不需要账户登录或 scope。', parameters: empty, output,
     execute: async (_args, execution) => { agent(execution); return facade.operations(); } });
-  register({ name: 'pap_request', timeoutMs: facade.requestTimeoutMs, description: '调用 pap_operations 返回的 operationRef。域名模式按统一协议规则执行：allow 直接调用，ask 自动显示本次授权对话框并等待用户点击，deny 或明确禁用不发送。不要让用户逐站配置，不换协议绕过禁止；支付、未知效果和额外权限仍单独确认。只提供声明过的 path/query 和可选 JSON body，不提供 URL/sessionRef/token/policyRef。path/query 值必须是字符串，例如 query: {page: "1"}；JSON body 保留自身类型。protocol_permission_denied 表示规则禁止；protocol_policy_changed 表示发送前规则变更；protocol_policy_required 表示需要更新匹配的 Identity Host；protocol_rediscovery_required 表示旧发现记录，使用用户给的域名重新 pap_connect，无需用户手工配置；request_previously_denied 表示既有拒绝仍有效，不自动重试；permission_denied 检查明确禁用及参数类型；静态模式仍要求已启用，不绕过权限；no_as 无需浏览器登录。写入必须用户明确要求，结果不确定绝不重发 POST。',
+  register({ name: 'pap_request', timeoutMs: facade.requestTimeoutMs, description: '调用 pap_operations 返回的 operationRef。域名模式按统一协议规则执行：allow 直接调用，ask 自动显示本次授权对话框并等待用户点击，deny 或明确禁用不发送。不要让用户逐站配置，不换协议绕过禁止；支付、未知效果和额外权限仍单独确认。只提供声明过的 path/query 和可选 JSON body，不提供 URL/sessionRef/token/policyRef。path/query 值必须是字符串，例如 query: {page: "1"}；JSON body 保留自身类型。UCP 写操作必须提供 UUID idempotencyKey，同一业务操作始终保留原键；需要版本前置条件时提供读取结果中的 ifMatch。protocol_permission_denied 表示规则禁止；protocol_policy_changed 表示发送前规则变更；protocol_policy_required 表示需要更新匹配的 Identity Host；protocol_rediscovery_required 表示旧发现记录，使用用户给的域名重新 pap_connect，无需用户手工配置；request_previously_denied 表示既有拒绝仍有效，不自动重试；permission_denied 检查明确禁用及参数类型；静态模式仍要求已启用，不绕过权限；no_as 无需浏览器登录。写入必须用户明确要求，结果不确定绝不重发 POST。',
     parameters: { type: 'object', additionalProperties: false, required: ['operationRef'], properties: {
       operationRef: { type: 'string' },
       path: { type: 'object', description: 'Declared path parameter values encoded as strings.', additionalProperties: { type: 'string', maxLength: 1024 } },
       query: { type: 'object', description: 'Declared query parameter values encoded as strings; use page: "1", not page: 1.', additionalProperties: { type: 'string', maxLength: 4096 } },
       body: {},
+      idempotencyKey: { type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9._:-]+$' },
+      ifMatch: { type: 'string', minLength: 1, maxLength: 256, pattern: '^(?:"[A-Za-z0-9._:-]+"|[A-Za-z0-9._:-]+)$' },
     } }, output,
     execute: async (args, execution) => { agent(execution); return facade.request(args, execution.signal); } });
 }

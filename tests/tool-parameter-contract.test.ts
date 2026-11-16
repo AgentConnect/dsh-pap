@@ -53,3 +53,18 @@ test('PAP pagination keeps string values and preserves JSON body types without c
     assert.equal(operationRequestSchema.safeParse({ operationRef: 'operation-reference', path: { version: 'x'.repeat(1025) } }).success, false);
   } finally { await f.ctx.fiber.dispose(); }
 });
+
+test('generic UCP writes can supply stable idempotency and version preconditions', async () => {
+  const f = await fixture();
+  try {
+    const backend = z.toJSONSchema(operationRequestSchema);
+    for (const key of ['idempotencyKey', 'ifMatch'] as const) {
+      assert.deepEqual(f.tool.parameters.properties[key], backend.properties?.[key]);
+    }
+    const input = { operationRef: 'cancel-cart', path: { id: 'cart' }, body: {},
+      idempotencyKey: 'ec9ec723-5fab-478b-a56d-6acb41084c58', ifMatch: '"v2"' };
+    assert.deepEqual(operationRequestSchema.parse(input), input);
+    await f.tool.execute(input, { agent: {} });
+    assert.deepEqual(f.calls, [input]);
+  } finally { await f.ctx.fiber.dispose(); }
+});
