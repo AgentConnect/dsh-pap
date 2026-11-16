@@ -1,7 +1,8 @@
 import type { PapAuthHint } from './errors.js';
-import type { Company, HttpResponse } from './types.js';
+import type { Company, HttpResponse, Route } from './types.js';
 import { responseHeader } from './cooldown.js';
-import { httpsUrl, parseJson } from './util.js';
+import { UCP_VERSION } from './ucp.js';
+import { httpsUrl, object, parseJson } from './util.js';
 const token = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const allowedErrors = new Set(['invalid_request','invalid_client','invalid_grant','invalid_scope','invalid_target','invalid_token','insufficient_scope','unauthorized_client','invalid_dpop_proof','use_dpop_nonce','invalid_session','session_ended','access_denied','extension_required','version_unsupported']);
 const challengeErrors = new Set(['invalid_request','invalid_client','invalid_grant','invalid_scope','invalid_target','invalid_token','insufficient_scope','unauthorized_client','invalid_dpop_proof','use_dpop_nonce','access_denied']);
@@ -45,7 +46,7 @@ function safeHint(challenge: Challenge, company: Company, resource: string): Pap
   if(challenge.metadata && challenge.metadata.length<=2048){try{const url=httpsUrl(challenge.metadata);const allowed=metadataUrl(resource);if(!url.search&&url.href===challenge.metadata&&url.href===allowed)hint.resourceMetadataUrl=url.href;}catch{/* An untrusted metadata hint is dropped; it is never fetched. */}}
   return hint;
 }
-export function protocolFailure(response: HttpResponse, company?: Company, resource?: string, preferred?: 'Bearer'|'DPoP'): { code?: string; hint?: PapAuthHint; challenge: boolean } {
+export function protocolFailure(response: HttpResponse, company?: Company, resource?: string, preferred?: 'Bearer'|'DPoP', channel?: Route['channel']): { code?: string; hint?: PapAuthHint; challenge: boolean } {
   if(response.status===401||response.status===403){
     const parsed=parseAuthenticate(responseHeader(response,'www-authenticate'));
     const preferredItems=parsed.challenges.filter(item=>item.scheme===preferred); const candidates=preferredItems.length?preferredItems:parsed.challenges; const selected=candidates[0];
@@ -53,6 +54,21 @@ export function protocolFailure(response: HttpResponse, company?: Company, resou
     if(selected){const code=selected.error===undefined?(response.status===401?'invalid_token':'insufficient_scope'):challengeErrors.has(selected.error)?selected.error:'oauth_error';return {code,hint:company&&resource?safeHint(selected,company,resource):undefined,challenge:true};}
     if(parsed.relevant)return {code:'oauth_error',challenge:true};
   }
-  try {const body=parseJson(response);if(typeof body.error==='string'&&allowedErrors.has(body.error))return{code:body.error,challenge:false};}catch{}
+  try {
+    const body = parseJson(response);
+    if (channel === 'ucp') {
+      const ucp = object(body.ucp);
+      if (response.status === 400 && ucp.version === UCP_VERSION && ucp.status === 'error' &&
+          Array.isArray(body.messages) && body.messages.length === 1) {
+        const message = object(body.messages[0]);
+        const code = message.code;
+        if (message.type === 'error' && (code === 'invalid_session' || code === 'session_ended' || code === 'version_unsupported')) {
+          return { code, challenge: false };
+        }
+      }
+    } else if (typeof body.error === 'string' && allowedErrors.has(body.error)) {
+      return { code: body.error, challenge: false };
+    }
+  } catch {}
   return {challenge:false};
 }

@@ -319,7 +319,7 @@ export class PapClient {
       finally { control.signal?.removeEventListener('abort', cancel); active.delete(controller); if (active.size === 0) this.abortedSessions.delete(sessionRef); }
       if (response.status >= 300 && response.status < 400) throw new PapError('redirect_blocked');
       if (response.status === 429) { const limited = await this.store.read(); throw cooldownError(limited, cooldownKey, this.clock()); }
-      const failure = protocolFailure(response, company, route.resource, grant?.tokenType); const error = failure.code;
+      const failure = protocolFailure(response, company, route.resource, grant?.tokenType, route.channel); const error = failure.code;
       if (error === 'version_unsupported') throw new PapError('version_unsupported');
       if (error === 'session_ended') {
         if (retriedSession) throw new PapError('session_ended'); retriedSession = true;

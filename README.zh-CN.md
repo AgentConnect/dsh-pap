@@ -90,6 +90,7 @@ Git blob `01e9dc34bacb73ef0a740cc3bae77d82f0be0d37`.
 - Direct Sign-In：显式用户入口、state、issuer、43 字符 S256 PKCE verifier、已发布 callback 校验、标准账户 Token、可选 RFC 9449 DPoP 和按 AS/资源分离的 nonce。
 - 独立 PAP account store：scope/resource 约束、refresh single-flight/CAS、轮换 Token 原子替换、丢回执标为 uncertain、退出撤销及 revocation_pending。持久 account slot epoch 同时约束登录事务、refresh 和发送前检查；退出取消 pending/exchanging 登录，迟到 Token 只保留撤销信息。并发资源调用会等待同一刷新代次。
 - `invalid_session` 停止，`session_ended` 新 sid 后最多重发一次，仅 GET/HEAD/OPTIONS 的 Token 错误可刷新后最多重发一次；副作用 API 的认证 challenge 不自动重放。网络超时或丢回执不自动重发副作用请求。429 持久保存 Retry-After fence，原请求不重放，后续显式请求在窗口前不签名或发送。
+- 发现为 UCP REST 的路由从 HTTP 400 的 UCP 错误响应读取 `invalid_session`、`session_ended` 和 `version_unsupported`。允许重发时保留原请求体和幂等键。一次批准的写入在收到 `session_ended` 后更新本地 Session，并将明确失败返回给调用方。
 
 Device 为后续独立阶段，当前返回 `unsupported_sign_in` 并且不广告。Browser Join、Mediated Sign-In、PS384、Web Bot Auth operator signature、自动账户合并均未实现。PAP 不复用 MCP machineToken、Mcp-Session-Id 或 0.2 Session grant。
 

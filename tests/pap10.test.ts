@@ -7,6 +7,7 @@ import {PapDiscovery} from '../src/discovery.js';
 import {PapClient} from '../src/client.js';
 import {isUcpRead,UCP_VERSION} from '../src/ucp.js';
 import {binding,FixtureHost,FixtureTransport,jsonResponse,secrets} from './fixture.js';
+import {jwtParts} from '../src/util.js';
 const origin='https://shop.example';
 const platformUrl='https://agent.example/ucp-platform';
 const profile=(endpoint?:string)=>({ucp:{version:UCP_VERSION,payment_handlers:{},services:endpoint?{'dev.ucp.shopping':[{transport:'rest',version:UCP_VERSION,endpoint}]}:{},capabilities:Object.fromEntries(['catalog.search','catalog.lookup','cart','checkout','order'].map(name=>[`dev.ucp.shopping.${name}`,[{version:UCP_VERSION}]]))}});
@@ -91,6 +92,56 @@ test('version_unsupported is surfaced without retrying or changing the Session',
   await assert.rejects(f.client.dispatchPap(f.sessionRef,{url:`${origin}/api/cart`}),{code:'version_unsupported'});
   assert.equal(sent,1);
   assert.equal((await f.client.store.read()).sessions[f.sessionRef]!.sid,before);
+});
+test('UCP Session errors require the detected channel, error envelope and HTTP 400', async t => {
+  const f = await setup(t);
+  const before = (await f.client.store.read()).sessions[f.sessionRef]!.sid;
+  const cart = `${origin}/ucp/v1/carts/cart_one`;
+  const error = (code: string, version = UCP_VERSION) => ({
+    ucp: { version, status: 'error' }, messages: [{ type: 'error', code, content: code }],
+  });
+  const previous = f.transport.override!;
+  const cases = [
+    { url: cart, status: 401, body: error('authentication_required') },
+    { url: cart, status: 409, body: error('session_ended') },
+    { url: cart, status: 400, body: error('session_ended', '2026-01-01') },
+    { url: cart, status: 400, body: { ...error('session_ended'), ucp: { version: UCP_VERSION } } },
+    { url: cart, status: 400, body: { ...error('session_ended'), messages: [{ type: 'warning', code: 'session_ended' }] } },
+    { url: cart, status: 400, body: { error: 'session_ended' } },
+    { url: `${origin}/api/cart`, status: 400, body: error('session_ended') },
+  ];
+  for (const {url, status, body} of cases) {
+    f.transport.override = (target, options) => target === url ? jsonResponse(url, body, status) : previous(target, options);
+    assert.equal((await f.client.dispatchPap(f.sessionRef, {url})).status, status);
+  }
+  for (const code of ['invalid_session', 'version_unsupported']) {
+    f.transport.override = (target, options) => target === cart ? jsonResponse(cart, error(code), 400) : previous(target, options);
+    await assert.rejects(f.client.dispatchPap(f.sessionRef, {url:cart}), {code});
+  }
+  assert.equal((await f.client.store.read()).sessions[f.sessionRef]!.sid, before);
+});
+test('UCP session_ended rotates once and retries only within the existing consent policy', async t => {
+  const f = await setup(t);
+  const cart = `${origin}/ucp/v1/carts`;
+  const previous = f.transport.override!;
+  f.transport.override = (url, options) => url === cart ? jsonResponse(url, {
+    ucp: { version: UCP_VERSION, status: 'error' },
+    messages: [{ type: 'error', code: 'session_ended', content: 'Session ended' }],
+  }, 400) : previous(url, options);
+
+  const operation = { url: cart, method: 'POST', body: '{"line_items":[]}', idempotencyKey: '7a66afff-4d4a-4d28-9dfb-247e7e72f7f1' };
+  await assert.rejects(f.client.dispatchPap(f.sessionRef, operation), { code: 'session_ended' });
+  const calls = f.transport.calls.filter(call => call.url === cart);
+  assert.equal(calls.length, 2);
+  const [first, second] = calls.map(call => call.options!.headers!['poppy-session']!);
+  assert.notEqual(jwtParts(first!).payload.sid, jwtParts(second!).payload.sid);
+  for (const call of calls) {
+    assert.equal(call.options!.headers!['idempotency-key'], operation.idempotencyKey);
+    assert.equal(call.options!.body, operation.body);
+  }
+
+  await assert.rejects(f.client.dispatchPap(f.sessionRef, operation, {singleOperation: true}), { code: 'session_ended' });
+  assert.equal(f.transport.calls.filter(call => call.url === cart).length, 3);
 });
 test('service PRM must match its exact resource rather than broad origin metadata',async()=>{
   const transport=fixture(),prior=transport.override!;transport.override=(url,options)=>url===`${origin}/.well-known/oauth-protected-resource/ucp/v1`?jsonResponse(url,{resource:origin}):prior(url,options);
