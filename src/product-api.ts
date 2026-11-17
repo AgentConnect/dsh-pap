@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { Binding, IdentityRef } from './types.js';
 import type { DeviceManagementOperations } from './callback-handoff.js';
+import { FRONTVIA_CONFIRMATION_VALUE } from './frontvia-checkout.js';
 
 export const PAP_CONSUMER = '@awiki/dsh-pap/plugin';
 export const PAP_MANAGER = '@awiki/dsh-pap/management-remote';
@@ -36,6 +37,7 @@ export const operationRequestSchema = z.object({
   body: z.json().optional(),
   ifMatch: z.string().min(1).max(256).regex(/^(?:"[A-Za-z0-9._:-]+"|[A-Za-z0-9._:-]+)$/).optional(),
   idempotencyKey: z.string().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/).optional(),
+  checkoutConfirmation: z.string().regex(FRONTVIA_CONFIRMATION_VALUE).optional(),
 }).strict();
 export type PapOperationRequest = z.infer<typeof operationRequestSchema>;
 export interface PapRequestTrace {

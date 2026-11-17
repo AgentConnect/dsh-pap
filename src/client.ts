@@ -1,4 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { supportsFrontviaConfirmation } from './ucp.js';
+import { FRONTVIA_CONFIRMATION_HEADER, FRONTVIA_CONFIRMATION_VALUE } from './frontvia-checkout.js';
 import { asCooldownKey, assertCooldownElapsed, cooldownError, recordCooldown, remainingCooldownMs, resourceCooldownKey, responseHeader } from './cooldown.js';
 import { protocolFailure } from './auth-challenge.js';
 import type { CredentialObservation } from './credential-history.js';
@@ -237,6 +239,9 @@ export class PapClient {
       requirePap(!reserved.some(value => htu(value) === htu(url)), 'unsafe_destination');
       const route = company.routes.find(x => x.method === method && matchedRoute(x.template, url)); requirePap(route, 'unsafe_destination');
       requirePap(!frozen.resource || frozen.resource === route.resource, 'unsafe_destination');
+      const checkoutConfirmation = headers[FRONTVIA_CONFIRMATION_HEADER];
+      requirePap(checkoutConfirmation === undefined || (supportsFrontviaConfirmation(company, route)
+        && FRONTVIA_CONFIRMATION_VALUE.test(checkoutConfirmation)), 'permission_denied');
       let grant = session.accountSlot ? Object.values(state.grants).find(x => this.sameUser(state, x.subjectRef, subject) && x.accountSlot === session.accountSlot && x.resource === route.resource && ['active','refreshing'].includes(x.status)) : undefined;
       if (session.accountSlot && !grant) {
         const shared = Object.values(state.grants).find(x => this.sameUser(state, x.subjectRef, subject) && x.accountSlot === session.accountSlot && ['active','refreshing'].includes(x.status));

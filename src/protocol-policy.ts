@@ -18,6 +18,7 @@ export interface PolicyHost { bindProtocolPolicy(context:Context,protocol:'pap')
 export function classifyRoute(policy: PolicyClient, route: Route): PolicyClassification {
   if (isUcpRead(route)) return {effect:'read',extraPermissions:false};
   if (route.channel === 'ucp' && route.operationId === 'complete_checkout') return {effect:'payment',extraPermissions:true};
+  if (route.channel === 'ucp' && route.requiresConsent) return {effect:'write',extraPermissions:true};
   // Old stored routes did not retain semantic evidence. Rediscovery is required before automatic use.
   if (!route.policyEvidence) return {effect:'unknown',extraPermissions:Boolean(route.requiresConsent)};
   return policy.classifyHttp({...route.policyEvidence,method:route.method});

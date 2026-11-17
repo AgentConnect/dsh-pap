@@ -346,6 +346,7 @@ export class PapService extends Service {
         const trace: PapRequestTrace = {phase:'prepare',businessRequest:'not_sent'};
         const result = await this.runPublic(async () => {
         check(); const parsed = operationRequestSchema.safeParse(input); requirePap(parsed.success, 'permission_denied');
+        requirePap(business || parsed.data.checkoutConfirmation === undefined, 'permission_denied');
         const engine = await this.engine(); const pin = this.credentialHistory.begin();
         try {
         const snapshot = await engine.store.read(); requirePap(snapshot.credentialVault?.completeness==='complete','credential_history_incomplete');

@@ -8,6 +8,12 @@ English | [简体中文](README.zh-CN.md)
 
 [PAP 1.0 specification](https://personalagentprotocol.org/docs/1.0/spec) · [Shared identity](https://github.com/agent-network-protocol/anp-identity) · [Service Agent demo](https://github.com/AgentConnect/service-agent) · [Apache-2.0](LICENSE)
 
+When both UCP profiles declare `com.frontvia.shopping.checkout_confirmation`
+as an extension of Checkout, PAP discovers fixed Frontvia purchase-preparation
+and browser-approval operations. The installed business consumer may pass a
+base64url `checkoutConfirmation` value on the negotiated Complete operation.
+PAP includes that business frame in the exact request presented for consent.
+
 ## The problem
 
 A personal agent should be able to connect to independent service agents without registering a fresh identity and handling another private key at every service. This plugin lets a DSH agent **reuse an existing, user-authorized identity** for PAP Company discovery, Delegation, signed Sessions and approved business operations.

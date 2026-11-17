@@ -1,6 +1,7 @@
 import { PapError, requirePap } from './errors.js';
 import { httpsUrl, htu, sha256 } from './util.js';
-import { isUcpRead } from './ucp.js';
+import { isUcpRead, supportsFrontviaConfirmation } from './ucp.js';
+import { FRONTVIA_CONFIRMATION_HEADER } from './frontvia-checkout.js';
 import { strictJson } from './strict-json.js';
 import type { Company, HttpResponse, Operation, PapState, ProductOperationApproval, Route } from './types.js';
 import type { PapOperationRequest } from './product-api.js';
@@ -53,7 +54,9 @@ export function prepareOperation(state: PapState, input: PapOperationRequest): {
 }
 /** Exact transient approval from the Host consent path; never persists a route permission. */
 export function prepareDiscoveredOperation(state: PapState, input: PapOperationRequest, approval: ProductOperationApproval): { operation: Operation; approval: ProductOperationApproval } {
-  const { route } = findOperation(state, input.operationRef);
+  const { company, route } = findOperation(state, input.operationRef);
+  const confirmation = input.checkoutConfirmation;
+  requirePap(confirmation === undefined || supportsFrontviaConfirmation(company, route), 'permission_denied');
   const pathNames = [...route.template.matchAll(/\{([A-Za-z0-9_.-]+)\}/g)].map(x => x[1]!);
   const path = input.path ?? {}; const query = input.query ?? {};
   requirePap(Object.keys(path).every(key => pathNames.includes(key)) && pathNames.every(key => typeof path[key] === 'string'), 'unsafe_destination');
@@ -71,10 +74,14 @@ export function prepareDiscoveredOperation(state: PapState, input: PapOperationR
   requirePap(url.href.length <= 8192, 'unsafe_destination');
   const body = input.body === undefined ? undefined : JSON.stringify(input.body);
   requirePap(body === undefined || ['POST','PUT','PATCH','DELETE'].includes(route.method) && Buffer.byteLength(body) <= 65536, 'permission_denied');
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  if (input.ifMatch !== undefined) headers['if-match'] = input.ifMatch;
+  if (confirmation !== undefined) headers[FRONTVIA_CONFIRMATION_HEADER] = confirmation;
   return { approval: structuredClone(approval), operation: { url: url.href, method: route.method, resource: route.resource, scopes: [...approval.scopes],
     ...(input.idempotencyKey === undefined ? {} : { idempotencyKey: input.idempotencyKey }),
     ...(body === undefined ? {} : { body }),
-    ...((body !== undefined || input.ifMatch !== undefined) ? {headers: {...(body === undefined ? {} : {'content-type':'application/json'}), ...(input.ifMatch === undefined ? {} : {'if-match':input.ifMatch})}} : {}) } };
+    ...(Object.keys(headers).length ? { headers } : {}) } };
 }
 
 const privateFields = /^(?:token|access[_-]?token|refresh[_-]?token|id[_-]?token|authorization|proxy[_-]?authorization|dpop|poppy[_-]?session|private[_-]?key|client[_-]?secret|client[_-]?assertion|code[_-]?verifier|claim[_-]?secret|callbackRef)$/i;

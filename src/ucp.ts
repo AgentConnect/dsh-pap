@@ -1,8 +1,19 @@
-import type { JsonObject, Route, UcpMetadata } from './types.js';
+import type { Company, JsonObject, Route, UcpMetadata } from './types.js';
 import { requirePap } from './errors.js';
+import { FRONTVIA_CHECKOUT_CONFIRMATION } from './frontvia-checkout.js';
 import { httpsUrl, object, sha256Hex } from './util.js';
 
 export const UCP_VERSION = '2026-08-25';
+const frontviaCheckoutOperations = [
+  ['/checkout-sessions/{id}/prepare', 'prepare_checkout'],
+  ['/checkout-sessions/{id}/handoff/approve', 'approve_checkout_handoff'],
+] as const;
+
+export function supportsFrontviaConfirmation(company: Company, route: Route): boolean {
+  return Boolean(company.ucp?.capabilities.includes(FRONTVIA_CHECKOUT_CONFIRMATION)
+    && route.channel === 'ucp' && route.operationId === 'complete_checkout' && route.method === 'POST'
+    && route.template === company.ucp.endpoint + '/checkout-sessions/{id}/complete');
+}
 /** Operation semantics are pinned to the dated Shopping REST contract, never merchant labels. */
 const operations = [
   ['catalog.search','POST','/catalog/search','search_catalog'],
@@ -28,6 +39,16 @@ export function negotiateUcp(business: JsonObject, platform: JsonObject, profile
   const supported = capabilities(platform);
   let negotiated = capabilities(business).filter(name => supported.includes(name));
   const definitions = object(object(business.ucp).capabilities);
+  const checkout = 'dev.ucp.shopping.checkout';
+  const published = (profile: JsonObject) => {
+    const extension = object(object(profile.ucp).capabilities)[FRONTVIA_CHECKOUT_CONFIRMATION];
+    return Array.isArray(extension) && extension.some(value => {
+      const entry = object(value);
+      return entry.version === UCP_VERSION && entry.extends === checkout;
+    });
+  };
+  if (!published(business) || !published(platform))
+    negotiated = negotiated.filter(name => name !== FRONTVIA_CHECKOUT_CONFIRMATION);
   for (;;) {
     const next = negotiated.filter(name => {
       const entry = (definitions[name] as unknown[]).map(object).find(value => value.version === UCP_VERSION)!;
@@ -52,6 +73,14 @@ export function negotiateUcp(business: JsonObject, platform: JsonObject, profile
     parameters: path.includes('{id}') ? [{name:'id',in:'path',required:true}] : [],
     policyEvidence: {hasRequestBody: method !== 'GET'},
   }));
+  if (negotiated.includes(FRONTVIA_CHECKOUT_CONFIRMATION) && negotiated.includes(checkout)) {
+    for (const [path, operationId] of frontviaCheckoutOperations) routes.push({
+      channel: 'ucp', method: 'POST', template: endpoint + path, resource, operationId,
+      parameters: [{name:'id', in:'path', required:true}],
+      requiresConsent: true,
+      policyEvidence: {hasRequestBody:true},
+    });
+  }
   requirePap(routes.length > 0, 'unsupported_profile');
   return {ucp:{profileUrl,platformProfileUrl,version:UCP_VERSION,digest:sha256Hex(JSON.stringify([business,platform])),endpoint,capabilities:negotiated},routes};
 }

@@ -10,12 +10,14 @@ import Loader from '@deepseek-ai/cordis-plugin-loader';
 import * as plugin from '../src/plugin.js';
 import ManagerRemote from '../src/management-remote.js';
 import * as toolPlugin from '../src/tools.js';
-import { PAP_CONSUMER, PAP_MANAGER, PAP_TOOLS, type PapHostConsumer, type ProductResult } from '../src/product-api.js';
+import { PAP_CONSUMER, PAP_MANAGER, PAP_TOOLS, operationRequestSchema, type PapHostConsumer, type ProductResult } from '../src/product-api.js';
 import type { ProtocolIdentityClient, ProtocolKeyReference, ProtocolSignerLease } from '../src/protocol-adapter.js';
-import type { Company, HttpTransport, KeyRef, KeyScope } from '../src/types.js';
+import type { Company, HttpTransport, KeyRef, KeyScope, PapState, ProductOperationApproval } from '../src/types.js';
 import { PapError, requirePap } from '../src/errors.js';
 import { binding, FixtureHost, FixtureTransport, jsonResponse, secrets } from './fixture.js';
-import { publicResponse } from '../src/product-operations.js';
+import { operationRef, prepareDiscoveredOperation, publicResponse } from '../src/product-operations.js';
+import { negotiateUcp } from '../src/ucp.js';
+import { FRONTVIA_CHECKOUT_CONFIRMATION } from '../src/frontvia-checkout.js';
 import { publicResult } from '../src/plugin.js';
 import { PapClient } from '../src/client.js';
 import { SafeHttpsTransport } from '../src/network.js';
@@ -173,6 +175,83 @@ async function accountConnection(f:Awaited<ReturnType<typeof fixture>>) {
   value(await f.manager.manage({action:'operation/enable',operationRef:operation.operationRef,sessionRef:account.sessionRef,scopes:['orders:read']}));
   return {...connectedState,pending,account,engine:(f.service as unknown as {client:PapClient}).client};
 }
+
+test('Frontvia checkout extension binds business proof to negotiated Complete only', () => {
+  const origin = 'https://merchant.test', endpoint = origin + '/ucp/v1';
+  const service = {version:'2026-08-25', transport:'rest', endpoint};
+  const checkout = 'dev.ucp.shopping.checkout';
+  const capability = {version:service.version};
+  const profile = (extension: boolean) => ({
+    ucp: {version:service.version, services:{'dev.ucp.shopping':[service]}, payment_handlers:{}, capabilities:{
+      [checkout]: [capability],
+      ...(extension ? {[FRONTVIA_CHECKOUT_CONFIRMATION]: [{...capability, extends:checkout}]} : {}),
+    }},
+  });
+  const negotiate = (platform: boolean) => negotiateUcp(profile(true), profile(platform), origin + '/.well-known/ucp',
+    'https://platform.test/.well-known/ucp', origin + '/commerce/rpc');
+  const negotiated = negotiate(true);
+  assert.deepEqual(negotiated.routes.filter(route => route.requiresConsent).map(route => route.operationId),
+    ['prepare_checkout', 'approve_checkout_handoff']);
+  assert(!negotiate(false).routes.some(route => route.requiresConsent));
+
+  const prepare = (platform: boolean, operationId: string) => {
+    const { ucp, routes } = negotiate(platform);
+    const company = {ref:'company', sources:[], ucp, routes} as unknown as Company;
+    const route = routes.find(route => route.operationId === operationId)!;
+    const approval = {scopes:[]} as unknown as ProductOperationApproval;
+    const input = {operationRef:operationRef(company, route), path:{id:'checkout'}, checkoutConfirmation:'e30'};
+    return prepareDiscoveredOperation({companies:{company}} as unknown as PapState, input, approval);
+  };
+  assert.equal(prepare(true, 'complete_checkout').operation.headers?.['frontvia-checkout-confirmation'], 'e30');
+  assert.throws(() => prepare(true, 'approve_checkout_handoff'), /permission_denied/);
+  assert.throws(() => prepare(false, 'complete_checkout'), /permission_denied/);
+  assert(!operationRequestSchema.safeParse({operationRef:'operation', checkoutConfirmation:'invalid=\r\n'}).success);
+});
+
+test('negotiated Frontvia prepare uses exact owner consent under allow-all writes', async t => {
+  const platformUrl = 'https://platform.test/.well-known/ucp';
+  const f = await fixture(t, {
+    autoConnect:true, businessConsumers:['example/shop'], ucpPlatformProfileUrl:platformUrl,
+  });
+  f.policy.set('write','allow');
+  const version = '2026-08-25';
+  const checkout = 'dev.ucp.shopping.checkout';
+  const capabilities = {
+    [checkout]: [{version}],
+    [FRONTVIA_CHECKOUT_CONFIRMATION]: [{version, extends:checkout}],
+  };
+  f.transport.override = (url, options) => {
+    const target = new URL(url);
+    if (target.pathname === '/.well-known/poppy.json')
+      return jsonResponse(url, {protocol_version:'1.0', organization:{name:'Shop', domain:target.hostname},
+        extensions:{ucp:[{version:'1'}]}});
+    if (target.pathname === '/.well-known/ucp') return jsonResponse(url, {
+      ucp:{version, capabilities, payment_handlers:{},
+        services:{'dev.ucp.shopping':[{version, transport:'rest', endpoint:'https://shop.example/ucp/v1'}]}},
+    });
+    if (target.pathname.endsWith('/prepare')) {
+      assert.equal(options?.method,'POST');
+      assert.equal(options?.body,'{}');
+      return jsonResponse(url,{status:'prepared'});
+    }
+    return undefined;
+  };
+  const context = [...f.loader.entries()].find(entry => entry.options.name === 'example/shop')!.fiber!.ctx;
+  const business = f.service.acquireBusiness(context);
+  value(await business.connect('shop.example'));
+  const routes = value(await business.operations()) as unknown as Value[];
+  const prepare = routes.find(route => route.operationId === 'prepare_checkout')!;
+  const approve = routes.find(route => route.operationId === 'approve_checkout_handoff')!;
+  assert(prepare.requiresApproval && approve.requiresApproval);
+  const pending = business.request({operationRef:prepare.operationRef, path:{id:'draft'}, body:{},
+    idempotencyKey:'7a66afff-4d4a-4d28-9dfb-247e7e72f7f1'});
+  await untilConsent(f);
+  assert(f.consent.request?.url.endsWith('/checkout-sessions/draft/prepare'));
+  assert(!f.transport.calls.some(call => call.url.endsWith('/prepare')));
+  f.consent.approve();
+  assert.equal(value(await pending).status,200);
+  assert.equal(f.transport.calls.filter(call => call.url.endsWith('/prepare')).length,1);
+});
 
 test('PAP 1.0 business client interoperates with an independent HTTPS UCP Catalog and Cart peer', async t => {
   const root=await mkdtemp(join(tmpdir(),'pap-ucp-peer-'));

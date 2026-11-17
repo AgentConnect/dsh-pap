@@ -6,6 +6,11 @@
 
 本项目让 DSH 中的 Personal Agent 使用**一套可复用的本地身份**连接外部 PAP Company。用户创建并发布身份、授权插件和业务操作后，Agent 无需在每个服务重复创建自己的密钥和身份；但 Company 的准入策略、权限检查与需要账户时的用户授权仍然有效。
 
+双方 UCP Profile 均声明 `com.frontvia.shopping.checkout_confirmation`
+并扩展 Checkout 时，PAP 发现固定的 Frontvia 结算准备和浏览器配对授权
+操作。已安装的业务消费者可仅在协商后的 Complete 操作携带
+base64url `checkoutConfirmation`，PAP 将该确认帧纳入本次授权的请求。
+
 ## 与 ANP、MCP 的关系
 
 | 协议 | 采用的身份认证方式 | 组件 |
