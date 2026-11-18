@@ -239,6 +239,12 @@ export class PapClient {
       requirePap(!reserved.some(value => htu(value) === htu(url)), 'unsafe_destination');
       const route = company.routes.find(x => x.method === method && matchedRoute(x.template, url)); requirePap(route, 'unsafe_destination');
       requirePap(!frozen.resource || frozen.resource === route.resource, 'unsafe_destination');
+      if (route.channel === 'ucp' && (route.operationId === 'get_store_context' || route.operationId === 'list_orders')) {
+        const keys = [...new URL(url).searchParams.keys()];
+        requirePap(keys.length <= (route.parameters?.length ?? 0) &&
+          new Set(keys).size === keys.length && keys.every(key => route.parameters?.some(parameter => parameter.name === key)),
+          'unsafe_destination');
+      }
       const checkoutConfirmation = headers[FRONTVIA_CONFIRMATION_HEADER];
       requirePap(checkoutConfirmation === undefined || (supportsFrontviaConfirmation(company, route)
         && FRONTVIA_CONFIRMATION_VALUE.test(checkoutConfirmation)), 'permission_denied');

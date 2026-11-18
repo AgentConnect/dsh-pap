@@ -5,7 +5,8 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {PapDiscovery} from '../src/discovery.js';
 import {PapClient} from '../src/client.js';
-import {isUcpRead,UCP_VERSION} from '../src/ucp.js';
+import {isUcpRead,negotiateUcp,UCP_VERSION} from '../src/ucp.js';
+import {operationRef,prepareOperation} from '../src/product-operations.js';
 import {binding,FixtureHost,FixtureTransport,jsonResponse,secrets} from './fixture.js';
 import {jwtParts} from '../src/util.js';
 const origin='https://shop.example';
@@ -35,6 +36,104 @@ test('PAP 1.0 discovery negotiates the configured product profile',async()=>{
   assert(company.routes.filter(r=>r.operationId==='search_catalog').every(isUcpRead));
   assert(!isUcpRead({...company.routes.find(r=>r.operationId==='create_cart')!,policyEvidence:{hasRequestBody:true,declaredEffect:'read'}}));
   const plain=await new PapDiscovery(transport).resolve('shop.example');assert.equal(plain.protocolVersion,'1.0');assert(!plain.ucp);assert(!plain.routes.some(r=>r.channel==='ucp'));
+});
+test('Frontvia reads require matching extension versions and parents on both profiles',()=>{
+  const store='com.frontvia.shopping.store_context', history='com.frontvia.shopping.order_history';
+  const withExtensions=(endpoint?:string)=>{
+    const result=profile(endpoint);
+    Object.assign(result.ucp.capabilities,{
+      [store]:[{version:UCP_VERSION,extends:'dev.ucp.shopping.catalog.search'}],
+      [history]:[{version:UCP_VERSION,extends:'dev.ucp.shopping.order'}],
+    });
+    return result;
+  };
+  const business=withExtensions(`${origin}/ucp/v1`), platform=withExtensions();
+  const negotiate=(b=business,p=platform)=>negotiateUcp(b,p,`${origin}/.well-known/ucp`,platformUrl,origin);
+  const {routes}=negotiate();
+  const route=(id:string)=>routes.find(route=>route.operationId===id)!;
+  assert.deepEqual([route('get_store_context').template,route('list_orders').template],
+    [`${origin}/ucp/v1/store-context`,`${origin}/ucp/v1/orders`]);
+  assert(isUcpRead(route('get_store_context'))&&isUcpRead(route('list_orders')));
+  assert.deepEqual(route('get_store_context').parameters,[]);
+  assert.deepEqual(route('list_orders').parameters,
+    ['limit','cursor'].map(name=>({name,in:'query',required:false})));
+  for(const [name,parent] of [[store,'dev.ucp.shopping.catalog.search'],[history,'dev.ucp.shopping.order']] as const){
+    const id=name===store?'get_store_context':'list_orders';
+    for(const side of ['business','platform']){
+      for(const invalid of ['version','extends','parent']){
+        const b=structuredClone(business),p=structuredClone(platform);
+        const capabilities=(side==='business'?b:p).ucp.capabilities;
+        if(invalid==='parent')delete capabilities[parent];
+        else Object.assign(capabilities[name]![0]!,{[invalid]:'invalid'});
+        assert(!negotiate(b,p).routes.some(route=>route.operationId===id));
+      }
+    }
+  }
+});
+test('PAP binds a cross-origin UCP endpoint without enabling Frontvia merchant reads',async t=>{
+  const apiOrigin='https://api.shop.example', endpoint=apiOrigin+'/ucp/v1';
+  const store='com.frontvia.shopping.store_context', history='com.frontvia.shopping.order_history';
+  const confirmation='com.frontvia.shopping.checkout_confirmation';
+  const transport=fixture(),previous=transport.override!;
+  transport.override=(url,options)=>{
+    if(url===apiOrigin+'/.well-known/oauth-protected-resource/ucp/v1')
+      return jsonResponse(url,{resource:endpoint});
+    if(url!==platformUrl && url!==origin+'/.well-known/ucp')return previous(url,options);
+    const data=profile(url===platformUrl?undefined:endpoint);
+    Object.assign(data.ucp.capabilities,{
+      [store]:[{version:UCP_VERSION,extends:'dev.ucp.shopping.catalog.search'}],
+      [history]:[{version:UCP_VERSION,extends:'dev.ucp.shopping.order'}],
+      [confirmation]:[{version:UCP_VERSION,extends:'dev.ucp.shopping.checkout'}],
+    });
+    return jsonResponse(url,data);
+  };
+  const f=await setup(t,transport);
+  const state=await f.client.store.read(),company=state.companies[f.companyRef]!;
+  assert.equal(company.ucp?.endpoint,endpoint);
+  assert(!company.ucp?.capabilities.includes(store));
+  assert(!company.ucp?.capabilities.includes(history));
+  assert(company.routes.some(route=>route.operationId==='prepare_checkout'));
+  const search=company.routes.find(route=>route.operationId==='search_catalog')!;
+  assert.equal(search.resource,endpoint);
+  assert.equal(search.template,endpoint+'/catalog/search');
+  await f.client.dispatchPap(f.sessionRef,{url:search.template,method:'POST',body:'{}'});
+  const sent=transport.calls.at(-1)!;
+  assert.equal(sent.url,search.template);
+  assert(sent.options?.headers?.['poppy-session']);
+  const count=transport.calls.length;
+  for(const path of ['/store-context','/orders'])
+    await assert.rejects(f.client.dispatchPap(f.sessionRef,{url:endpoint+path}),{code:'unsafe_destination'});
+  assert.equal(transport.calls.length,count);
+});
+test('Frontvia order history uses the negotiated PAP Session and only its allowed query names',async t=>{
+  const transport=fixture(),previous=transport.override!;
+  transport.override=(url,options)=>{
+    if(url!==platformUrl && url!==`${origin}/.well-known/ucp`)return previous(url,options);
+    const data=profile(url===platformUrl?undefined:`${origin}/ucp/v1`);
+    Object.assign(data.ucp.capabilities,{
+      'com.frontvia.shopping.order_history':[{version:UCP_VERSION,extends:'dev.ucp.shopping.order'}],
+      'com.frontvia.shopping.store_context':[{version:UCP_VERSION,extends:'dev.ucp.shopping.catalog.search'}],
+    });
+    return jsonResponse(url,data);
+  };
+  const f=await setup(t,transport),url=`${origin}/ucp/v1/orders?limit=3&cursor=next`;
+  const state=await f.client.store.read(),company=state.companies[f.companyRef]!;
+  const history=company.routes.find(route=>route.operationId==='list_orders')!;
+  const reference=operationRef(company,history);
+  assert.throws(()=>prepareOperation(state,{operationRef:reference}),{code:'permission_denied'});
+  state.product={operations:{[reference]:{companyRef:company.ref,sessionRef:f.sessionRef,
+    method:history.method,template:history.template,resource:history.resource,scopes:[],generation:1}}};
+  assert.equal(prepareOperation(state,{operationRef:reference,query:{limit:'3',cursor:'next'}}).operation.url,url);
+  assert.throws(()=>prepareOperation(state,{operationRef:reference,query:{destination:'other'}}),{code:'unsafe_destination'});
+  await f.client.dispatchPap(f.sessionRef,{url});
+  const sent=transport.calls.at(-1)!;
+  assert.equal(sent.url,url);
+  assert(sent.options?.headers?.['poppy-session']);
+  assert.equal(sent.options?.headers?.['ucp-agent'],`profile="${platformUrl}"`);
+  const count=transport.calls.length;
+  for(const path of ['/orders?tenant_id=other','/orders?limit=1&limit=3','/store-context?cursor=next'])
+    await assert.rejects(f.client.dispatchPap(f.sessionRef,{url:`${origin}/ucp/v1${path}`}),{code:'unsafe_destination'});
+  assert.equal(transport.calls.length,count);
 });
 test('PAP rejects retired or unknown versions without following an alternate',async()=>{
   for(const version of ['0.3','1.x','2.0']){
