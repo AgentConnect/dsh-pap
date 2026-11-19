@@ -364,6 +364,44 @@ test('PAP 1.0 business client interoperates with an independent HTTPS UCP Catalo
   assert.deepEqual(calls,['POST /shopping/catalog/search','POST /shopping/carts','PUT /shopping/carts/cart_tea','PUT /shopping/carts/cart_tea']);
 });
 
+test('a selected UCP order history operation keeps its protocol on a shared OpenAPI URL', async t => {
+  const platformUrl = 'https://platform.test/.well-known/ucp';
+  const origin = 'https://shop.example';
+  const version = '2026-08-25';
+  const order = 'dev.ucp.shopping.order';
+  const history = 'com.frontvia.shopping.order_history';
+  const f = await fixture(t, {autoConnect:true, businessConsumers:['example/shop'], ucpPlatformProfileUrl:platformUrl});
+  f.transport.override = url => {
+    const path = new URL(url).pathname;
+    if (path === '/.well-known/poppy.json')
+      return jsonResponse(url, {protocol_version:'1.0', organization:{name:'Shop',domain:'shop.example'},
+        apis:[{type:'openapi',url:origin+'/openapi.json'}], extensions:{ucp:[{version:'1'}]}});
+    if (path === '/openapi.json') return jsonResponse(url, {
+      openapi:'3.1.0', servers:[{url:origin}], paths:{'/ucp/v1/orders':{get:{operationId:'orders'}}},
+    });
+    if (path === '/.well-known/ucp') return jsonResponse(url, {ucp:{
+      version, capabilities:{[order]:[{version}], [history]:[{version,extends:order}]}, payment_handlers:{},
+      services:{'dev.ucp.shopping':[{version,transport:'rest',endpoint:origin+'/ucp/v1'}]},
+    }});
+    if (path === '/ucp/v1/orders') return jsonResponse(url, {items:[]});
+    return undefined;
+  };
+  const context = [...f.loader.entries()].find(entry => entry.options.name === 'example/shop')!.fiber!.ctx;
+  const business = f.service.acquireBusiness(context);
+  value(await business.connect('shop.example'));
+  const routes = value(await business.operations()) as unknown as Value[];
+  const ucp = routes.find(route => route.channel === 'ucp' && route.operationId === 'list_orders')!;
+  const openapi = routes.find(route => route.channel === 'openapi' && route.path === '/ucp/v1/orders')!;
+  assert(ucp && openapi);
+  assert.equal(value(await business.request({operationRef:ucp.operationRef})).status, 200);
+  assert.equal(value(await business.request({operationRef:openapi.operationRef})).status, 200);
+  const calls = f.transport.calls.filter(call => call.url === origin+'/ucp/v1/orders');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0]!.options?.headers?.['ucp-agent'], `profile="${platformUrl}"`);
+  assert.match(calls[0]!.options?.headers?.['request-id'] ?? '', /^[a-f0-9-]{36}$/);
+  assert.equal(calls[1]!.options?.headers?.['ucp-agent'], undefined);
+});
+
 test('PAP product real Loader: disabled/unconfigured do not access secrets or network', async t => {
   const f = await fixture(t, { enabled: false }); assert.equal(value(await f.manager.status()).state, 'disabled');
   assert.equal(f.contexts.length, 0); assert.equal(f.transport.calls.length, 0); assert.deepEqual(await readdir(f.root), []);

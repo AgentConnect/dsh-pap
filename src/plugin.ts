@@ -376,7 +376,7 @@ export class PapService extends Service {
         try {
           const dispatch = (assertConsent?: () => Promise<void>) => {
             trace.phase='identity';
-            return engine.dispatchPap(prepared.approval.sessionRef, prepared.operation, { signal,
+            return engine.dispatchPap(prepared.approval.sessionRef, prepared.operation, { signal, operationRef: parsed.data.operationRef,
             observeBusiness: (event,status) => {
               trace.phase=event==='attempted'?'request':'response';
               trace.businessRequest=event==='attempted'?'unknown':'response_received';
