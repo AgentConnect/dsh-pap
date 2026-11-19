@@ -11,6 +11,7 @@ import { PapError, requirePap, type PapAuthHint } from './errors.js';
 import type { PapHostOptions, PapSigningLease } from './host.js';
 import { PapStore } from './store.js';
 import { DelegationAttemptFailure, newDelegation, thumbprint, verifyCompact } from './delegation.js';
+import { operationRef } from './product-operations.js';
 import type { AuthTransaction, Company, Delegation, Grant, HttpResponse, HttpTransport, KeyRef, Operation, PapState, Session, Subject } from './types.js';
 import { httpsUrl, htu, id, isPapLoopbackRedirect, jwtParts, matchedRoute, parseJson, scopeFor, sha256 } from './util.js';
 
@@ -23,6 +24,7 @@ interface AccountRequestControl { purpose?: 'token'|'revoke'|'par'; scopes: read
 /** Same-process permission fence, never a wire input. */
 export interface PapDispatchControl {
   signal?: AbortSignal;
+  operationRef?: string;
   assertAllowed?: (state: PapState) => void;
   /** Revalidate the consumed exact-operation permit immediately before physical dispatch. */
   assertConsent?: () => Promise<void>;
@@ -217,6 +219,7 @@ export class PapClient {
   async dispatchPap(sessionRef: string, operation: Operation, control: PapDispatchControl = {}): Promise<HttpResponse> {
     // Freeze all caller inputs before any await, including the exact body and business idempotency key.
     const frozen = structuredClone(operation);
+    const reference = control.operationRef;
     const headers: Record<string,string> = {};
     for (const [name, value] of Object.entries(frozen.headers ?? {})) { requirePap(!protectedHeaders.has(name.toLowerCase()) && !/[\r\n]/.test(value), 'permission_denied'); headers[name.toLowerCase()] = value; }
     if (frozen.idempotencyKey !== undefined) { requirePap(/^[A-Za-z0-9._:-]{1,128}$/.test(frozen.idempotencyKey), 'permission_denied'); requirePap(!headers['idempotency-key'] || headers['idempotency-key'] === frozen.idempotencyKey, 'permission_denied'); headers['idempotency-key'] = frozen.idempotencyKey; }
@@ -227,7 +230,8 @@ export class PapClient {
       const initial = await this.store.read(); const initialSession = this.session(initial, sessionRef); const initialSubject = this.subject(initial, initialSession.subjectRef); const initialCompany = this.company(initial, initialSubject.companyRef);
       control.assertAllowed?.(initial);
       const initialMethod = (frozen.method ?? 'GET').toUpperCase(); const initialUrl = httpsUrl(frozen.url).href;
-      const initialRoute = initialCompany.routes.find(route => route.method === initialMethod && matchedRoute(route.template, initialUrl)); requirePap(initialRoute, 'unsafe_destination');
+      const initialRoute = initialCompany.routes.find(route => route.method === initialMethod && matchedRoute(route.template, initialUrl)
+        && (reference === undefined || operationRef(initialCompany, route) === reference)); requirePap(initialRoute, 'unsafe_destination');
       const waitContext: WaitContext = { subjectRef: initialSubject.ref, sessionRef, accountSlot: initialSession.accountSlot, accountEpoch: initialSession.accountSlot ? initial.accountSlots[initialSession.accountSlot]?.epoch : undefined };
       if (waitContext.accountSlot) { requirePap(waitContext.accountEpoch !== undefined, 'reauthorization_required'); accountContext ??= { slot: waitContext.accountSlot, epoch: waitContext.accountEpoch }; }
       await this.awaitCooldown(resourceCooldownKey(initialCompany.companyId, initialRoute.resource), waitContext);
@@ -237,8 +241,15 @@ export class PapClient {
       requirePap(/^[A-Z]+$/.test(method), 'unsafe_destination');
       const reserved = [...company.sources.map(x => x.url), company.metadata?.token_endpoint, company.metadata?.authorization_endpoint, company.metadata?.revocation_endpoint, company.metadata?.pushed_authorization_request_endpoint].filter((x): x is string => Boolean(x));
       requirePap(!reserved.some(value => htu(value) === htu(url)), 'unsafe_destination');
-      const route = company.routes.find(x => x.method === method && matchedRoute(x.template, url)); requirePap(route, 'unsafe_destination');
+      const route = company.routes.find(x => x.method === method && matchedRoute(x.template, url)
+        && (reference === undefined || operationRef(company, x) === reference)); requirePap(route, 'unsafe_destination');
       requirePap(!frozen.resource || frozen.resource === route.resource, 'unsafe_destination');
+      if (route.channel === 'ucp' && (route.operationId === 'get_store_context' || route.operationId === 'list_orders')) {
+        const keys = [...new URL(url).searchParams.keys()];
+        requirePap(keys.length <= (route.parameters?.length ?? 0) &&
+          new Set(keys).size === keys.length && keys.every(key => route.parameters?.some(parameter => parameter.name === key)),
+          'unsafe_destination');
+      }
       const checkoutConfirmation = headers[FRONTVIA_CONFIRMATION_HEADER];
       requirePap(checkoutConfirmation === undefined || (supportsFrontviaConfirmation(company, route)
         && FRONTVIA_CONFIRMATION_VALUE.test(checkoutConfirmation)), 'permission_denied');
