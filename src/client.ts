@@ -64,7 +64,7 @@ export class PapClient {
   }
   close(): void { this.closed = true; for (const waiter of this.cooldownWaiters) waiter.controller.abort(new PapError('disconnected')); for (const active of this.abortedSessions.values()) for (const controller of active) controller.abort(); this.options.identityHost.dispose?.(); }
   async recover(): Promise<void> { await this.store.recover(); }
-  async resolvePapCompany(domain: string): Promise<{ companyRef: string; companyId: string; name: string; authMode: Company['authMode']; scopes: string[]; ucpCapabilities?: string[] }> {
+  async resolvePapCompany(domain: string): Promise<{ companyRef: string; companyId: string; name: string; authMode: Company['authMode']; scopes: string[]; ucpCapabilities?: string[]; ucpFulfillmentParents?: string[] }> {
     // Failed discovery never commits or erases a previous issuer.
     const discovered = await this.discovery.resolve(domain);
     const company = await this.store.transaction(state => {
@@ -74,7 +74,7 @@ export class PapClient {
       state.companies[discovered.ref] = discovered;
       return discovered;
     });
-    return { companyRef: company.ref, companyId: company.companyId, name: company.name, authMode: company.authMode, scopes: company.scopes, ...(company.ucp ? {ucpCapabilities:company.ucp.capabilities} : {}) };
+    return { companyRef: company.ref, companyId: company.companyId, name: company.name, authMode: company.authMode, scopes: company.scopes, ...(company.ucp ? {ucpCapabilities:company.ucp.capabilities, ucpFulfillmentParents:company.ucp.fulfillmentParents} : {}) };
   }
   async getOrCreatePapUser(companyRef: string, mode: 'regular' | 'anonymous' = 'regular', agent = false): Promise<{ subjectRef: string }> {
     requirePap(mode === 'regular' || mode === 'anonymous', 'permission_denied');

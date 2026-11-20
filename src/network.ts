@@ -63,7 +63,8 @@ export class SafeHttpsTransport implements HttpTransport {
           const chunks: Buffer[] = []; let bytes = 0;
           response.on('data', (chunk: Buffer) => {
             bytes += chunk.length;
-            if (bytes > (this.options.maxBytes ?? 1024 * 1024)) { response.destroy(); reject(new PapError('request_uncertain')); }
+            if (bytes > ((this.options.maxBytes ?? 0) >= 8 * 1024 * 1024 && response.headers['content-type']?.split(';')[0] === 'application/pdf'
+                ? 10 * 1024 * 1024 : this.options.maxBytes ?? 1024 * 1024)) { response.destroy(); reject(new PapError('request_uncertain')); }
             else chunks.push(chunk);
           });
           response.on('error', () => reject(new PapError('request_uncertain')));

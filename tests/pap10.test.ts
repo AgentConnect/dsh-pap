@@ -269,3 +269,18 @@ test('legacy Company aliases retain the buyer ID while opening a current-version
   assert.equal(state.sessions[session.sessionRef]!.protocolVersion,'1.0');
   assert.equal(state.sessions[f.sessionRef]!.protocolVersion,undefined);
 });
+
+test('catalog and checkout require a common Fulfillment parent at the negotiated version', () => {
+  const fulfillment = 'dev.ucp.shopping.fulfillment', checkout = 'dev.ucp.shopping.checkout', catalog = 'dev.ucp.shopping.catalog.search';
+  const make = (parents: string[], endpoint?: string) => {
+    const doc = profile(endpoint);
+    Object.assign(doc.ucp.capabilities, { [fulfillment]: [{ version: UCP_VERSION, extends: parents }] });
+    return doc;
+  };
+  const select = (business: string[], platform: string[]) => negotiateUcp(make(business,origin + '/ucp/v1'),make(platform),
+    origin + '/.well-known/ucp',platformUrl,origin).ucp;
+  assert.deepEqual(select([checkout,catalog],[catalog]).fulfillmentParents, [catalog]);
+  const disjoint = select([catalog],[checkout]);
+  assert.deepEqual(disjoint.fulfillmentParents, []);
+  assert(!disjoint.capabilities.includes(fulfillment));
+});
