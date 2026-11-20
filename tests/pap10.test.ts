@@ -280,6 +280,17 @@ test('catalog and checkout require a common Fulfillment parent at the negotiated
   const select = (business: string[], platform: string[]) => negotiateUcp(make(business,origin + '/ucp/v1'),make(platform),
     origin + '/.well-known/ucp',platformUrl,origin).ucp;
   assert.deepEqual(select([checkout,catalog],[catalog]).fulfillmentParents, [catalog]);
+  for (const parents of [[checkout,catalog],[catalog,checkout]]) {
+    const business = make([],origin + '/ucp/v1');
+    const platform = make([catalog]);
+    delete platform.ucp.capabilities[checkout];
+    Object.assign(business.ucp.capabilities, {
+      [fulfillment]: parents.map(parent => ({version: UCP_VERSION, extends: parent})),
+    });
+    const {ucp} = negotiateUcp(business,platform,origin + '/.well-known/ucp',platformUrl,origin);
+    assert(ucp.capabilities.includes(fulfillment));
+    assert.deepEqual(ucp.fulfillmentParents, [catalog]);
+  }
   const disjoint = select([catalog],[checkout]);
   assert.deepEqual(disjoint.fulfillmentParents, []);
   assert(!disjoint.capabilities.includes(fulfillment));

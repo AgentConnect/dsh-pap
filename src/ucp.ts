@@ -85,6 +85,7 @@ export function negotiateUcp(business: JsonObject, platform: JsonObject, profile
   const endpoint = base.href.replace(/\/$/, '');
   for (;;) {
     const next = negotiated.filter(name => {
+      if (name === fulfillment) return fulfillmentParents.some(parent => negotiated.includes(parent));
       const entry = (definitions[name] as unknown[]).map(object).find(value => value.version === UCP_VERSION)!;
       if (entry.extends === undefined) return true;
       const parents = typeof entry.extends === 'string' ? [entry.extends] : entry.extends;
@@ -109,5 +110,5 @@ export function negotiateUcp(business: JsonObject, platform: JsonObject, profile
     });
   }
   requirePap(routes.length > 0, 'unsupported_profile');
-  return {ucp:{profileUrl,platformProfileUrl,version:UCP_VERSION,digest:sha256Hex(JSON.stringify([business,platform])),endpoint,capabilities:negotiated,fulfillmentParents},routes};
+  return {ucp:{profileUrl,platformProfileUrl,version:UCP_VERSION,digest:sha256Hex(JSON.stringify([business,platform])),endpoint,capabilities:negotiated,fulfillmentParents:fulfillmentParents.filter(parent => negotiated.includes(parent))},routes};
 }
