@@ -24,10 +24,20 @@ export interface SafeHttpsOptions {
   portOverrides?: Readonly<Record<string, number>>;
   lookup?: (host: string) => Promise<{ address: string; family: number }[]>;
 }
+export const orderPdfMaxBytes = 10 * 1024 * 1024;
+
 export class SafeHttpsTransport implements HttpTransport {
   private active = 0;
   constructor(private readonly options: SafeHttpsOptions = {}) {}
-  async request(value: string, options: Parameters<HttpTransport['request']>[1] = {}): Promise<HttpResponse> {
+  request(value: string, options: Parameters<HttpTransport['request']>[1] = {}): Promise<HttpResponse> {
+    return this.send(value, options, false);
+  }
+
+  requestOrderPdf(value: string, options: NonNullable<Parameters<HttpTransport['request']>[1]>): Promise<HttpResponse> {
+    return this.send(value, options, true);
+  }
+
+  private async send(value: string, options: NonNullable<Parameters<HttpTransport['request']>[1]>, orderPdf: boolean): Promise<HttpResponse> {
     const url = httpsUrl(value);
     requirePap(url.href.length <= 8192 && Buffer.byteLength(options.body ?? '') <= (this.options.maxRequestBytes ?? 1024 * 1024), 'unsafe_destination');
     requirePap(Object.keys(options.headers ?? {}).length <= 64 && Object.entries(options.headers ?? {}).every(([key,value]) => key.length + value.length <= 131072 && !/[\r\n]/.test(key + value)), 'unsafe_destination');
@@ -60,11 +70,12 @@ export class SafeHttpsTransport implements HttpTransport {
             else callback(null, address.address, address.family);
           }) as never,
         }, response => {
+          const maxBytes = orderPdf && response.statusCode === 200 && response.headers['content-type']?.split(';')[0] === 'application/pdf'
+            ? orderPdfMaxBytes : this.options.maxBytes ?? 1024 * 1024;
           const chunks: Buffer[] = []; let bytes = 0;
           response.on('data', (chunk: Buffer) => {
             bytes += chunk.length;
-            if (bytes > ((this.options.maxBytes ?? 0) >= 8 * 1024 * 1024 && response.headers['content-type']?.split(';')[0] === 'application/pdf'
-                ? 10 * 1024 * 1024 : this.options.maxBytes ?? 1024 * 1024)) { response.destroy(); reject(new PapError('request_uncertain')); }
+            if (bytes > maxBytes) { response.destroy(); reject(new PapError('request_uncertain')); }
             else chunks.push(chunk);
           });
           response.on('error', () => reject(new PapError('request_uncertain')));

@@ -1,4 +1,4 @@
-import { orderPdf } from './product-operations.js';
+import { isOrderPdfRoute, orderPdf } from './product-operations.js';
 import { Service, type Context } from '@deepseek-ai/cordis';
 import { isAbsolute, join, resolve } from 'node:path';
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
@@ -352,6 +352,8 @@ export class PapService extends Service {
         try {
         const snapshot = await engine.store.read(); requirePap(snapshot.credentialVault?.completeness==='complete','credential_history_incomplete');
         const { route } = findOperation(snapshot, parsed.data.operationRef);
+        const pdf = business && route.operationId === 'commerce.orders.file';
+        requirePap(!pdf || isOrderPdfRoute(route) && /^[a-f0-9]{64}$/.test(parsed.data.path?.sha256 ?? ''), 'permission_denied');
         const domain=this.config.autoConnect===true;
         const prepared = domain ? this.prepareDomainOperation(snapshot, parsed.data) : prepareOperation(snapshot, parsed.data);
         const admission=domain?await this.policyAdmission(snapshot,parsed.data.operationRef,prepared.operation.url):undefined;
@@ -377,7 +379,7 @@ export class PapService extends Service {
         try {
           const dispatch = (assertConsent?: () => Promise<void>) => {
             trace.phase='identity';
-            return engine.dispatchPap(prepared.approval.sessionRef, prepared.operation, { signal, operationRef: parsed.data.operationRef,
+            return engine.dispatchPap(prepared.approval.sessionRef, prepared.operation, { signal, operationRef: parsed.data.operationRef, orderPdf: pdf,
             observeBusiness: (event,status) => {
               trace.phase=event==='attempted'?'request':'response';
               trace.businessRequest=event==='attempted'?'unknown':'response_received';
@@ -398,7 +400,7 @@ export class PapService extends Service {
           const secrets = [...sentSecrets, ...privateValues(current), ...this.credentialHistory.values()];
           checkRequest(); await (await this.consumer()).assertActive(); checkRequest();
           this.authHints.delete(parsed.data.operationRef);
-          if (business && route.operationId === "commerce.orders.file" && response.status === 200) return orderPdf(response, route, parsed.data.path, secrets);
+          if (pdf && response.status === 200) return orderPdf(response, route, parsed.data.path, secrets);
           return publicResponse(response, secrets, business ? 8*1024*1024 : 65536);
         } catch (error) {
           if (this.client === engine && !this.changing && error instanceof PapError && error.authHint) {

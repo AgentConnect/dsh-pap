@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import https from 'node:https';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -362,6 +363,60 @@ test('PAP 1.0 business client interoperates with an independent HTTPS UCP Catalo
   assert(discovery.includes('merchant.test/.well-known/poppy.json')&&discovery.includes('merchant.test/.well-known/ucp')
     &&discovery.includes('platform.test/.well-known/ucp'));
   assert.deepEqual(calls,['POST /shopping/catalog/search','POST /shopping/carts','PUT /shopping/carts/cart_tea','PUT /shopping/carts/cart_tea']);
+});
+
+test('only a business order file uses the larger PDF response limit', async t => {
+  const origin = 'https://shop.example';
+  const root = await mkdtemp(join(tmpdir(), 'pap-order-pdf-'));
+  t.after(() => rm(root, { recursive:true, force:true }));
+  const key = join(root,'key.pem'), cert = join(root,'cert.pem');
+  execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,
+    '-days','1','-subj','/CN=shop.example','-addext','subjectAltName=DNS:shop.example'],{stdio:'ignore'});
+  const ca = await readFile(cert);
+  const size = 1024 * 1024;
+  const pdf = Buffer.alloc(9 * size); pdf.write('%PDF-');
+  const digest = createHash('sha256').update(pdf).digest('hex');
+  const route = '/commerce/v1/stores/{store_id}/orders/{order_id}/lines/{line_id}/files/{sha256}';
+  const other = '/unrelated';
+  const path = {store_id:'shop',order_id:'order',line_id:'line',sha256:digest};
+  const resolved = route.replace(/\{([a-z_0-9]+)\}/g, (_match,key:keyof typeof path)=>path[key]);
+  const definition = {operationId:'commerce.orders.file',parameters:Object.keys(path).map(name=>({name,in:'path',required:true,schema:{type:'string'}}))};
+  const largePdf = Buffer.alloc(11 * size); largePdf.write('%PDF-');
+  let file = pdf;
+  const server = https.createServer({key:await readFile(key),cert:ca}, (req,res) => {
+    res.setHeader('content-type','application/json');
+    if (req.url === '/.well-known/poppy.json') return res.end(JSON.stringify({
+      protocol_version:'1.0',organization:{name:'Shop',domain:'shop.example'},
+      apis:[{type:'openapi',url:origin+'/openapi.json'}],
+    }));
+    if (req.url === '/openapi.json') return res.end(JSON.stringify({
+      openapi:'3.1.0',servers:[{url:origin}],paths:{[route]:{get:definition},[other]:{get:{operationId:'unrelated'}}},
+    }));
+    if (req.url === other) return res.writeHead(200,{'content-type':'application/pdf'}).end(largePdf);
+    if (req.url === resolved && req.headers['poppy-session'])
+      return res.writeHead(200,{'content-type':'application/pdf','x-frontvia-sha256':digest}).end(file);
+    return res.writeHead(404).end();
+  });
+  await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
+  const options = {ca,privateOrigins:[origin],portOverrides:{[origin]:(server.address() as {port:number}).port},
+    lookup:async()=>[{address:'127.0.0.1',family:4}]};
+  const transport = new SafeHttpsTransport({...options,maxBytes:8 * size});
+  await assert.rejects(transport.request(origin+other),{code:'request_uncertain'});
+  assert.equal((await new SafeHttpsTransport({...options,maxBytes:12 * size}).request(origin+other)).body.length,largePdf.length);
+
+  const f = await fixture(t,{autoConnect:true,businessConsumers:['example/shop'],transport});
+  const context = [...f.loader.entries()].find(entry=>entry.options.name==='example/shop')!.fiber!.ctx;
+  const business = f.service.acquireBusiness(context);
+  value(await business.connect('shop.example'));
+  const operations = value(await business.operations()) as unknown as Value[];
+  const operationRef = operations.find(entry=>entry.operationId==='commerce.orders.file')!.operationRef;
+  const download = await business.request({operationRef,path});
+  const body = value(download).body;
+  assert.equal(body.sha256,digest);
+  assert.deepEqual(Buffer.from(body.bytes_base64,'base64'),pdf);
+  file = largePdf;
+  error(await business.request({operationRef,path}),'request_uncertain');
 });
 
 test('a selected UCP order history operation keeps its protocol on a shared OpenAPI URL', async t => {

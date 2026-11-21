@@ -6,7 +6,7 @@ import type { Route } from '../src/types.js';
 
 test('only a verified order file returns bytes and the digest to the business UI', () => {
   const origin = 'https://store.example';
-  const route: Route = { method: 'GET', resource: origin, operationId: 'commerce.orders.file',
+  const route: Route = { method: 'GET', channel: 'openapi', resource: origin, operationId: 'commerce.orders.file',
     template: origin + '/commerce/v1/stores/{store_id}/orders/{order_id}/lines/{line_id}/files/{sha256}' };
   const body = Buffer.from('%PDF-1.7\norder fixture\n%%EOF');
   const sha256 = createHash('sha256').update(body).digest('hex');

@@ -3,6 +3,7 @@ import { httpsUrl, htu, sha256, sha256Hex } from './util.js';
 import { isUcpRead, supportsFrontviaConfirmation } from './ucp.js';
 import { FRONTVIA_CONFIRMATION_HEADER } from './frontvia-checkout.js';
 import { strictJson } from './strict-json.js';
+import { orderPdfMaxBytes } from './network.js';
 import type { Company, HttpResponse, Operation, PapState, ProductOperationApproval, Route } from './types.js';
 import type { PapOperationRequest } from './product-api.js';
 
@@ -123,14 +124,18 @@ export function publicResponse(response: HttpResponse, secrets: readonly string[
   catch { return { status: response.status, bodyAvailable: false }; }
 }
 
+export function isOrderPdfRoute(route: Route): boolean {
+  return route.channel === 'openapi' && route.method === 'GET' && route.operationId === 'commerce.orders.file' &&
+    new URL(route.template).pathname.replace(/%7b/gi, '{').replace(/%7d/gi, '}') ===
+      '/commerce/v1/stores/{store_id}/orders/{order_id}/lines/{line_id}/files/{sha256}';
+}
+
 /** Only an installed business UI can request an immutable order PDF by its exact digest. */
 export function orderPdf(response: HttpResponse, route: Route, path: Record<string, string> | undefined, secrets: string[]) {
-  requirePap(route.method === 'GET' && route.operationId === 'commerce.orders.file' &&
-    new URL(route.template).pathname.replace(/%7b/gi, '{').replace(/%7d/gi, '}') ===
-      '/commerce/v1/stores/{store_id}/orders/{order_id}/lines/{line_id}/files/{sha256}', 'permission_denied');
+  requirePap(isOrderPdfRoute(route), 'permission_denied');
   const bytes = Buffer.from(response.body);
   requirePap(response.status === 200 && response.headers['content-type']?.split(';')[0] === 'application/pdf' &&
-    bytes.length <= 10 * 1024 * 1024 && bytes.subarray(0, 5).toString('ascii') === '%PDF-' &&
+    bytes.length <= orderPdfMaxBytes && bytes.subarray(0, 5).toString('ascii') === '%PDF-' &&
     /^[a-f0-9]{64}$/.test(path?.sha256 ?? '') && sha256Hex(bytes) === path?.sha256 &&
     response.headers['x-frontvia-sha256'] === path.sha256 && !secrets.some(secret => secret && bytes.includes(Buffer.from(secret))), 'permission_denied');
   return { status: 200, body: { bytes_base64: bytes.toString('base64'), sha256: path.sha256 } };
