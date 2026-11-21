@@ -37,6 +37,95 @@ test('PAP 1.0 discovery negotiates the configured product profile',async()=>{
   assert(!isUcpRead({...company.routes.find(r=>r.operationId==='create_cart')!,policyEvidence:{hasRequestBody:true,declaredEffect:'read'}}));
   const plain=await new PapDiscovery(transport).resolve('shop.example');assert.equal(plain.protocolVersion,'1.0');assert(!plain.ucp);assert(!plain.routes.some(r=>r.channel==='ucp'));
 });
+test('UCP Ask negotiates Common REST independently and signs only the discovered public route',async t=>{
+  const endpoint=`${origin}/common/v1`,path=endpoint+'/ask',ask='dev.ucp.common.ask',common='dev.ucp.common';
+  const platform=profile();
+  Object.assign(platform.ucp.services,{[common]:[{version:UCP_VERSION,transport:'rest'}]});
+  Object.assign(platform.ucp.capabilities,{[ask]:[{version:UCP_VERSION}]});
+  const business=profile(`${origin}/ucp/v1`);
+  Object.assign(business.ucp.services,{[common]:[{version:UCP_VERSION,transport:'rest',endpoint}]});
+  Object.assign(business.ucp.capabilities,{[ask]:[{version:UCP_VERSION}]});
+  const transport=fixture(),previous=transport.override!;
+  transport.override=(url,options)=>{
+    if(url===platformUrl)return jsonResponse(url,platform);
+    if(url===`${origin}/.well-known/ucp`)return jsonResponse(url,business);
+    if(url===`${origin}/.well-known/oauth-protected-resource/common/v1`)return jsonResponse(url,{resource:endpoint});
+    if(url===path)return jsonResponse(url,{answer:{plain:'Size up once.'}});
+    return previous(url,options);
+  };
+  const f=await setup(t,transport);
+  const company=(await f.client.store.read()).companies[f.companyRef]!;
+  const route=company.routes.find(value=>value.operationId==='ask_business')!;
+  assert(isUcpRead(route));
+  assert.equal(route.template,path);
+  assert.equal(route.resource,endpoint);
+  assert.equal(company.routes.find(value=>value.operationId==='search_catalog')?.template,`${origin}/ucp/v1/catalog/search`);
+  const idempotencyKey='54fdf38e-2454-4db9-bade-f569caa338a9';
+  const body=JSON.stringify({query:'Does it fit?',ids:['product-1']});
+  const operation={url:path,method:'POST',body,idempotencyKey};
+  await f.client.dispatchPap(f.sessionRef,operation,{operationRef:operationRef(company,route)});
+  const request=transport.calls.at(-1)!;
+  assert.equal(request.url,path);
+  assert.equal(request.options?.body,body);
+  const headers=request.options?.headers;
+  assert(headers?.['poppy-session']);
+  assert.equal(jwtParts(headers['poppy-session']).payload.htu,path);
+  assert.equal(headers['ucp-agent'],`profile="${platformUrl}"`);
+  assert.equal(headers['idempotency-key'],idempotencyKey);
+  assert.equal(headers.authorization,undefined);
+  assert.equal(headers.dpop,undefined);
+  const count=transport.calls.length;
+  await assert.rejects(f.client.dispatchPap(f.sessionRef,{...operation,scopes:['dev.ucp.common.ask:read']}),{code:'permission_denied'});
+  await assert.rejects(f.client.dispatchPap(f.sessionRef,{...operation,url:path+'?target=another'}),{code:'unsafe_destination'});
+  assert.equal(transport.calls.length,count);
+
+  const select=(merchant:Parameters<typeof negotiateUcp>[0],agent:Parameters<typeof negotiateUcp>[1])=>
+    negotiateUcp(merchant,agent,origin+'/.well-known/ucp',platformUrl,origin);
+  const platformWithoutCommon={ucp:{...platform.ucp,services:{}}};
+  assert(!select(business,platformWithoutCommon).routes.some(value=>value.operationId==='ask_business'));
+  const foreign={ucp:{...business.ucp,services:{...business.ucp.services,[common]:[{version:UCP_VERSION,transport:'rest',endpoint:'https://other.example/v1'}]}}};
+  assert(!select(foreign,platform).routes.some(value=>value.operationId==='ask_business'));
+  const ambiguous={ucp:{...business.ucp,services:{...business.ucp.services,[common]:[endpoint,origin].map(endpoint=>({version:UCP_VERSION,transport:'rest',endpoint}))}}};
+  const shoppingRoutes=select(ambiguous,platform).routes;
+  assert(shoppingRoutes.some(value=>value.operationId==='search_catalog'));
+  assert(!shoppingRoutes.some(value=>value.operationId==='ask_business'));
+  for (const malformed of [[null], ['not-an-entry'], [null, {version:UCP_VERSION}]]) {
+    const badBusiness={ucp:{...business.ucp,capabilities:{...business.ucp.capabilities,[ask]:malformed}}};
+    const badPlatform={ucp:{...platform.ucp,capabilities:{...platform.ucp.capabilities,[ask]:malformed}}};
+    for (const result of [select(badBusiness,platform),select(business,badPlatform)]) {
+      assert(result.routes.some(value=>value.operationId==='search_catalog'));
+      assert(!result.routes.some(value=>value.operationId==='ask_business'));
+    }
+  }
+  const askOnly={ucp:{...business.ucp,services:{[common]:[{version:UCP_VERSION,transport:'rest',endpoint}]}}};
+  assert.deepEqual(select(askOnly,platform).routes.map(value=>value.operationId),['ask_business']);
+});
+test('An invalid optional Common resource binding leaves verified Shopping routes usable',async()=>{
+  const ask='dev.ucp.common.ask',common='dev.ucp.common';
+  const platform=profile(),business=profile(`${origin}/ucp/v1`);
+  Object.assign(platform.ucp.services,{[common]:[{version:UCP_VERSION,transport:'rest'}]});
+  Object.assign(business.ucp.services,{[common]:[{version:UCP_VERSION,transport:'rest',endpoint:`${origin}/common/v1`}]});
+  for (const declaration of [platform,business]) Object.assign(declaration.ucp.capabilities,{[ask]:[{version:UCP_VERSION}]});
+  const transport=fixture(),previous=transport.override!;
+  const metadataUrl=`${origin}/.well-known/oauth-protected-resource/common/v1`;
+  let resourceStatus=503;
+  transport.override=(url,options)=>{
+    if(url===platformUrl)return jsonResponse(url,platform);
+    if(url===`${origin}/.well-known/ucp`)return jsonResponse(url,business);
+    if(url===metadataUrl)return jsonResponse(url,{resource:`${origin}/other`,scopes_supported:['unverified:scope']},resourceStatus);
+    return previous(url,options);
+  };
+  for (const status of [503,200]) {
+    resourceStatus=status;
+    const resolved=await new PapDiscovery(transport,()=>Date.now(),platformUrl).resolve('shop.example');
+    assert(resolved.routes.some(value=>value.operationId==='search_catalog'));
+    assert(!resolved.routes.some(value=>value.operationId==='ask_business'));
+    assert(!resolved.ucp?.capabilities.includes(ask));
+    assert.equal(resolved.ucp?.commonEndpoint,undefined);
+    assert(!resolved.scopes.includes('unverified:scope'));
+    assert(!resolved.sources.some(value=>value.url===metadataUrl));
+  }
+});
 test('Frontvia reads require matching extension versions and parents on both profiles',()=>{
   const store='com.frontvia.shopping.store_context', history='com.frontvia.shopping.order_history';
   const withExtensions=(endpoint?:string)=>{
