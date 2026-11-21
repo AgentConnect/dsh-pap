@@ -1,8 +1,12 @@
 {
   "name": "@awiki/dsh-pap",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Local-custody PAP 1.0 client for DeepSeek Harness",
-  "dshPapUcpOperations": ["get_store_context", "list_orders"],
+  "dshPapUcpOperations": [
+    "get_store_context",
+    "list_orders",
+    "commerce.orders.file"
+  ],
   "type": "module",
   "license": "Apache-2.0",
   "main": "lib/index.js",

@@ -1,5 +1,7 @@
 # DSH PAP
 
+Version 0.2.2 lets an authorized business plugin download a purchased PDF through `commerce.orders.file`. PAP verifies the response against the order’s SHA-256 digest. UCP discovery reports the negotiated Catalog and Checkout parents for Fulfillment.
+
 Domain automatic access and exact-operation confirmation require `@agent-network-protocol/dsh-anp-identity >=0.1.18` in the same Host. The identity peer is optional for library-only use, but the domain plugin must have the new Host consent API. The supported policy is automatic discovered reads plus owner-approved one-shot writes; there is no full-write or chat-controlled global write setting in this release.
 
 **A PAP 1.0 client for DeepSeek Harness (DSH), powered by a reusable, locally held agent identity.**

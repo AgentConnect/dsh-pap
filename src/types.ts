@@ -25,7 +25,7 @@ export interface AsMetadata {
   pushed_authorization_request_endpoint?: string; require_pushed_authorization_requests?: boolean;
 }
 export type PapVersion = '1.0';
-export interface UcpMetadata { profileUrl: string; platformProfileUrl: string; version: string; digest: string; endpoint: string; capabilities: string[] }
+export interface UcpMetadata { profileUrl: string; platformProfileUrl: string; version: string; digest: string; endpoint: string; capabilities: string[]; fulfillmentParents?: string[] }
 export interface Company {
   protocolVersion: PapVersion; extensions?: Record<string, string>; ucp?: UcpMetadata;
   /** Initial HTTPS discovery origin, pinned through validated redirects; never inferred from a hostname suffix. */

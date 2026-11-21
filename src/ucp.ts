@@ -60,6 +60,17 @@ export function negotiateUcp(business: JsonObject, platform: JsonObject, profile
     if (!negotiated.includes(parent) || !published(business, name, parent) || !published(platform, name, parent))
       negotiated = negotiated.filter(capability => capability !== name);
   }
+  const fulfillment = 'dev.ucp.shopping.fulfillment';
+  const fulfillmentParents = [checkout, 'dev.ucp.shopping.catalog.search', 'dev.ucp.shopping.catalog.lookup'].filter(parent =>
+    negotiated.includes(parent) && [business, platform].every(profile => {
+      const entries = object(object(profile.ucp).capabilities)[fulfillment];
+      return Array.isArray(entries) && entries.some(value => {
+        const entry = object(value);
+        return entry.version === UCP_VERSION && (entry.extends === parent ||
+          Array.isArray(entry.extends) && entry.extends.includes(parent));
+      });
+    }));
+  if (!fulfillmentParents.length) negotiated = negotiated.filter(name => name !== fulfillment);
   const services = object(object(business.ucp).services);
   const shopping = services['dev.ucp.shopping'];
   requirePap(Array.isArray(shopping), 'unsupported_profile');
@@ -74,6 +85,7 @@ export function negotiateUcp(business: JsonObject, platform: JsonObject, profile
   const endpoint = base.href.replace(/\/$/, '');
   for (;;) {
     const next = negotiated.filter(name => {
+      if (name === fulfillment) return fulfillmentParents.some(parent => negotiated.includes(parent));
       const entry = (definitions[name] as unknown[]).map(object).find(value => value.version === UCP_VERSION)!;
       if (entry.extends === undefined) return true;
       const parents = typeof entry.extends === 'string' ? [entry.extends] : entry.extends;
@@ -98,5 +110,5 @@ export function negotiateUcp(business: JsonObject, platform: JsonObject, profile
     });
   }
   requirePap(routes.length > 0, 'unsupported_profile');
-  return {ucp:{profileUrl,platformProfileUrl,version:UCP_VERSION,digest:sha256Hex(JSON.stringify([business,platform])),endpoint,capabilities:negotiated},routes};
+  return {ucp:{profileUrl,platformProfileUrl,version:UCP_VERSION,digest:sha256Hex(JSON.stringify([business,platform])),endpoint,capabilities:negotiated,fulfillmentParents:fulfillmentParents.filter(parent => negotiated.includes(parent))},routes};
 }

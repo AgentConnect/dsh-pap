@@ -11,7 +11,8 @@ import { PapError, requirePap, type PapAuthHint } from './errors.js';
 import type { PapHostOptions, PapSigningLease } from './host.js';
 import { PapStore } from './store.js';
 import { DelegationAttemptFailure, newDelegation, thumbprint, verifyCompact } from './delegation.js';
-import { operationRef } from './product-operations.js';
+import { isOrderPdfRoute, operationRef } from './product-operations.js';
+import { SafeHttpsTransport } from './network.js';
 import type { AuthTransaction, Company, Delegation, Grant, HttpResponse, HttpTransport, KeyRef, Operation, PapState, Session, Subject } from './types.js';
 import { httpsUrl, htu, id, isPapLoopbackRedirect, jwtParts, matchedRoute, parseJson, scopeFor, sha256 } from './util.js';
 
@@ -25,6 +26,7 @@ interface AccountRequestControl { purpose?: 'token'|'revoke'|'par'; scopes: read
 export interface PapDispatchControl {
   signal?: AbortSignal;
   operationRef?: string;
+  orderPdf?: boolean;
   assertAllowed?: (state: PapState) => void;
   /** Revalidate the consumed exact-operation permit immediately before physical dispatch. */
   assertConsent?: () => Promise<void>;
@@ -64,7 +66,7 @@ export class PapClient {
   }
   close(): void { this.closed = true; for (const waiter of this.cooldownWaiters) waiter.controller.abort(new PapError('disconnected')); for (const active of this.abortedSessions.values()) for (const controller of active) controller.abort(); this.options.identityHost.dispose?.(); }
   async recover(): Promise<void> { await this.store.recover(); }
-  async resolvePapCompany(domain: string): Promise<{ companyRef: string; companyId: string; name: string; authMode: Company['authMode']; scopes: string[]; ucpCapabilities?: string[] }> {
+  async resolvePapCompany(domain: string): Promise<{ companyRef: string; companyId: string; name: string; authMode: Company['authMode']; scopes: string[]; ucpCapabilities?: string[]; ucpFulfillmentParents?: string[] }> {
     // Failed discovery never commits or erases a previous issuer.
     const discovered = await this.discovery.resolve(domain);
     const company = await this.store.transaction(state => {
@@ -74,7 +76,7 @@ export class PapClient {
       state.companies[discovered.ref] = discovered;
       return discovered;
     });
-    return { companyRef: company.ref, companyId: company.companyId, name: company.name, authMode: company.authMode, scopes: company.scopes, ...(company.ucp ? {ucpCapabilities:company.ucp.capabilities} : {}) };
+    return { companyRef: company.ref, companyId: company.companyId, name: company.name, authMode: company.authMode, scopes: company.scopes, ...(company.ucp ? {ucpCapabilities:company.ucp.capabilities, ucpFulfillmentParents:company.ucp.fulfillmentParents} : {}) };
   }
   async getOrCreatePapUser(companyRef: string, mode: 'regular' | 'anonymous' = 'regular', agent = false): Promise<{ subjectRef: string }> {
     requirePap(mode === 'regular' || mode === 'anonymous', 'permission_denied');
@@ -220,6 +222,7 @@ export class PapClient {
     // Freeze all caller inputs before any await, including the exact body and business idempotency key.
     const frozen = structuredClone(operation);
     const reference = control.operationRef;
+    const orderPdf = control.orderPdf === true;
     const headers: Record<string,string> = {};
     for (const [name, value] of Object.entries(frozen.headers ?? {})) { requirePap(!protectedHeaders.has(name.toLowerCase()) && !/[\r\n]/.test(value), 'permission_denied'); headers[name.toLowerCase()] = value; }
     if (frozen.idempotencyKey !== undefined) { requirePap(/^[A-Za-z0-9._:-]{1,128}$/.test(frozen.idempotencyKey), 'permission_denied'); requirePap(!headers['idempotency-key'] || headers['idempotency-key'] === frozen.idempotencyKey, 'permission_denied'); headers['idempotency-key'] = frozen.idempotencyKey; }
@@ -326,7 +329,10 @@ export class PapClient {
           control.captureSecrets?.([sessionJwt, sentHeaders.dpop, sentHeaders.authorization, grant?.accessToken, grant?.refreshToken, subject.userId, subject.agentId, session.sid].filter((value): value is string => Boolean(value)), grant ? { accessToken: grant.accessToken, refreshToken: grant.refreshToken, accessExpiresInMs: grant.expiresAt === undefined ? undefined : Math.max(0, grant.expiresAt - this.clock()) } : undefined);
           control.observeBusiness?.('attempted');
           businessAttempted = true;
-          const response = await this.transport.request(url, { method, headers: sentHeaders, body: frozen.body, signal: controller.signal });
+          const request = { method, headers: sentHeaders, body: frozen.body, signal: controller.signal };
+          const response = orderPdf && method === 'GET' && isOrderPdfRoute(route) && this.transport instanceof SafeHttpsTransport
+            ? await this.transport.requestOrderPdf(url, request)
+            : await this.transport.request(url, request);
           control.observeBusiness?.('response',response.status);
           if (response.status === 429) recordCooldown(current, cooldownKey, response, this.clock());
           return response;

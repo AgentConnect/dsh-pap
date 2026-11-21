@@ -1,3 +1,4 @@
+import { isOrderPdfRoute, orderPdf } from './product-operations.js';
 import { Service, type Context } from '@deepseek-ai/cordis';
 import { isAbsolute, join, resolve } from 'node:path';
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
@@ -290,7 +291,7 @@ export class PapService extends Service {
     return this.publicValue(state,{ state: 'ready', identity: this.selected, supportedSignIn: ['direct'],
       ...(includeManagementHints ? { authenticationHints: [...this.authHints].map(([operationRef, hint]) => ({ operationRef, ...hint })),
         pendingSignIns: Object.values(state.transactions).filter(value => value.status === 'pending' && value.expiresAt > Date.now()).map(value => ({ transactionRef:value.ref, accountSlot:value.accountSlot, ...(state.subjects[value.subjectRef]?{companyRef:state.subjects[value.subjectRef]!.companyRef}:{}), expiresAt:value.expiresAt })) } : {}),
-      companies: Object.values(state.companies).map(value => ({ companyRef: value.ref, ...(businessMetadata?{domain:value.domain,companyId:value.companyId,...(value.ucp?{ucpCapabilities:value.ucp.capabilities}:{})}:{}), name: value.name, authMode: value.authMode, scopes: value.scopes })),
+      companies: Object.values(state.companies).map(value => ({ companyRef: value.ref, ...(businessMetadata?{domain:value.domain,companyId:value.companyId,...(value.ucp?{ucpCapabilities:value.ucp.capabilities, ucpFulfillmentParents:value.ucp.fulfillmentParents}:{})}:{}), name: value.name, authMode: value.authMode, scopes: value.scopes })),
       sessions: Object.values(state.sessions).map(value => ({ sessionRef: value.ref, ...(state.subjects[value.subjectRef] ? { companyRef: state.subjects[value.subjectRef]!.companyRef } : {}), connected: value.connected, account: Boolean(value.accountSlot), ...(value.accountSlot ? { accountSlot: value.accountSlot } : {}) })),
       accounts: Object.values(state.grants).map(value => ({ accountSlot: value.accountSlot, ...(state.subjects[value.subjectRef] ? { companyRef:state.subjects[value.subjectRef]!.companyRef } : {}), status: value.status, scopes: value.scope,canRefresh:value.status==='active'&&Boolean(value.refreshToken) })),
     }) as object;
@@ -351,6 +352,8 @@ export class PapService extends Service {
         try {
         const snapshot = await engine.store.read(); requirePap(snapshot.credentialVault?.completeness==='complete','credential_history_incomplete');
         const { route } = findOperation(snapshot, parsed.data.operationRef);
+        const pdf = business && route.operationId === 'commerce.orders.file';
+        requirePap(!pdf || isOrderPdfRoute(route) && /^[a-f0-9]{64}$/.test(parsed.data.path?.sha256 ?? ''), 'permission_denied');
         const domain=this.config.autoConnect===true;
         const prepared = domain ? this.prepareDomainOperation(snapshot, parsed.data) : prepareOperation(snapshot, parsed.data);
         const admission=domain?await this.policyAdmission(snapshot,parsed.data.operationRef,prepared.operation.url):undefined;
@@ -376,7 +379,7 @@ export class PapService extends Service {
         try {
           const dispatch = (assertConsent?: () => Promise<void>) => {
             trace.phase='identity';
-            return engine.dispatchPap(prepared.approval.sessionRef, prepared.operation, { signal, operationRef: parsed.data.operationRef,
+            return engine.dispatchPap(prepared.approval.sessionRef, prepared.operation, { signal, operationRef: parsed.data.operationRef, orderPdf: pdf,
             observeBusiness: (event,status) => {
               trace.phase=event==='attempted'?'request':'response';
               trace.businessRequest=event==='attempted'?'unknown':'response_received';
@@ -396,7 +399,9 @@ export class PapService extends Service {
           this.credentialHistory.restore(current);
           const secrets = [...sentSecrets, ...privateValues(current), ...this.credentialHistory.values()];
           checkRequest(); await (await this.consumer()).assertActive(); checkRequest();
-          this.authHints.delete(parsed.data.operationRef); return publicResponse(response, secrets, business ? 8*1024*1024 : 65536);
+          this.authHints.delete(parsed.data.operationRef);
+          if (pdf && response.status === 200) return orderPdf(response, route, parsed.data.path, secrets);
+          return publicResponse(response, secrets, business ? 8*1024*1024 : 65536);
         } catch (error) {
           if (this.client === engine && !this.changing && error instanceof PapError && error.authHint) {
             if (this.authHints.size >= 32) this.authHints.delete(this.authHints.keys().next().value!);
