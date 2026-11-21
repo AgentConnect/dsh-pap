@@ -1,6 +1,6 @@
 {
   "name": "@awiki/dsh-pap",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Local-custody PAP 1.0 client for DeepSeek Harness",
   "dshPapUcpOperations": [
     "get_store_context",
