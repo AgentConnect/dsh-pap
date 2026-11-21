@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { supportsFrontviaConfirmation } from './ucp.js';
+import { isUcpAsk, supportsFrontviaConfirmation } from './ucp.js';
 import { FRONTVIA_CONFIRMATION_HEADER, FRONTVIA_CONFIRMATION_VALUE } from './frontvia-checkout.js';
 import { asCooldownKey, assertCooldownElapsed, cooldownError, recordCooldown, remainingCooldownMs, resourceCooldownKey, responseHeader } from './cooldown.js';
 import { protocolFailure } from './auth-challenge.js';
@@ -247,7 +247,9 @@ export class PapClient {
       const route = company.routes.find(x => x.method === method && matchedRoute(x.template, url)
         && (reference === undefined || operationRef(company, x) === reference)); requirePap(route, 'unsafe_destination');
       requirePap(!frozen.resource || frozen.resource === route.resource, 'unsafe_destination');
-      if (route.channel === 'ucp' && (route.operationId === 'get_store_context' || route.operationId === 'list_orders')) {
+      const publicAsk = isUcpAsk(route);
+      if (publicAsk) requirePap(!session.accountSlot && !frozen.scopes?.length, 'permission_denied');
+      if (publicAsk || route.channel === 'ucp' && (route.operationId === 'get_store_context' || route.operationId === 'list_orders')) {
         const keys = [...new URL(url).searchParams.keys()];
         requirePap(keys.length <= (route.parameters?.length ?? 0) &&
           new Set(keys).size === keys.length && keys.every(key => route.parameters?.some(parameter => parameter.name === key)),

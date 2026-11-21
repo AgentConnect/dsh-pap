@@ -3,6 +3,7 @@
   "version": "0.2.3",
   "description": "Local-custody PAP 1.0 client for DeepSeek Harness",
   "dshPapUcpOperations": [
+    "ask_business",
     "get_store_context",
     "list_orders",
     "commerce.orders.file"

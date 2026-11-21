@@ -1,5 +1,5 @@
 import type { AsMetadata, Company, HttpResponse, HttpTransport, JsonObject, Route } from './types.js';
-import { negotiateUcp } from './ucp.js';
+import { ASK_CAPABILITY, isUcpAsk, negotiateUcp } from './ucp.js';
 import { PapError, requirePap } from './errors.js';
 import { httpsUrl, id, object, parseJson, sha256, sha256Hex, strings } from './util.js';
 const optionalStrings = (value: unknown) => value === undefined ? undefined : strings(value);
@@ -101,16 +101,19 @@ export class PapDiscovery {
       const target = httpsUrl(service);
       const response = await request(`${target.origin}/.well-known/oauth-protected-resource${target.pathname === '/' ? '' : target.pathname}`);
       let resource = origin;
+      let scopes: string[] = [];
       if (response.status !== 404) {
-        requirePap(response.status === 200, 'discovery_failed'); record(response);
+        requirePap(response.status === 200, 'discovery_failed');
         const metadata = parseJson(response); httpsUrl(metadata.resource);
-        if (metadata.scopes_supported !== undefined) strings(metadata.scopes_supported).forEach(scope => advertisedScopes.add(scope));
+        scopes = optionalStrings(metadata.scopes_supported) ?? [];
         requirePap(metadata.resource === service, 'discovery_failed');
         if (mcp) requirePap(metadata.resource === service, 'discovery_failed');
         if (issuer && metadata.authorization_servers !== undefined) requirePap(strings(metadata.authorization_servers).includes(issuer), 'discovery_failed');
         resource = metadata.resource as string;
       } else requirePap(!mcp, 'discovery_failed');
       if (issuer && metadata) requirePap(metadata.protected_resources.includes(resource), 'discovery_failed');
+      if (response.status !== 404) record(response);
+      scopes.forEach(scope => advertisedScopes.add(scope));
       resourceCache.set(service, resource); return resource;
     };
     if (doc.apis !== undefined) {
@@ -200,8 +203,21 @@ export class PapDiscovery {
       const platform = await read(platformUrl);
       const negotiated = negotiateUcp(business, platform, profileUrl, platformUrl, origin);
       ucp = negotiated.ucp;
-      const resource = await serviceResource(ucp.endpoint);
-      routes.push(...negotiated.routes.map(route => ({...route,resource})));
+      const previousRouteCount = routes.length;
+      for (const route of negotiated.routes) {
+        if (!isUcpAsk(route)) {
+          routes.push({...route, resource:await serviceResource(ucp.endpoint)});
+          continue;
+        }
+        try {
+          routes.push({...route, resource:await serviceResource(ucp.commonEndpoint!)});
+        } catch (error) {
+          if (!(error instanceof PapError)) throw error;
+          const {commonEndpoint: _, ...shopping} = ucp;
+          ucp = {...shopping, capabilities:shopping.capabilities.filter(name => name !== ASK_CAPABILITY)};
+        }
+      }
+      requirePap(routes.length > previousRouteCount, 'unsupported_profile');
     }
     requirePap(routes.length > 0 && routes.length <= 2048, 'unsupported_profile');
     const scopes = [...new Set([...(auth.scopes === undefined ? [] : Object.keys(object(auth.scopes))), ...discoveredScopes, ...advertisedScopes])];
