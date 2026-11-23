@@ -74,6 +74,7 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   let consentBindings = 0;
   let consentRequests = 0, consentExecutions = 0, consentCancels = 0, consentActive = true;
   let consentRequest: Request | undefined;
+  let consentPurpose: string | undefined;
   let expectedRequest: string | undefined;
   let policyVersion=0;
   const decisions:Record<PolicyClassification['effect'],'allow'|'ask'|'deny'>={read:'allow',write:'ask',unknown:'ask',payment:'ask'};
@@ -98,8 +99,9 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   const requestFingerprint = async (request: Request) => JSON.stringify([request.method,request.url,[...request.headers],await request.clone().text()]);
   const consent = {
     async request(input: {requestId:string;purpose:string;request:Request}) {
-      assert(input.purpose.startsWith('PAP exact operation'));
+      assert(input.purpose.startsWith('PAP exact operation') || input.request.headers.has('poppy-approval'));
       assert(!input.request.headers.has('poppy-session') && !input.request.headers.has('authorization') && !input.request.headers.has('dpop'));
+      consentPurpose=input.purpose;
       consentRequests++; consentRequest=input.request.clone(); expectedRequest=await requestFingerprint(input.request);
       return {...consentDecision};
     },
@@ -153,7 +155,7 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   t.after(async () => { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }); await rm(root + '-keys', { recursive: true, force: true }); });
   return { root, ctx, loader, host, transport,
     policy:{set(effect:PolicyClassification['effect'],decision:'allow'|'ask'|'deny'){decisions[effect]=decision;policyVersion++;}},
-    consent: {approve(mode='once') {consentDecision={...consentDecision,status:'approved',grantId:'once-grant',mode};},deny(){consentDecision.status='denied';},revoke(){consentActive=false;},get bindings(){return consentBindings;},get requests(){return consentRequests;},get executions(){return consentExecutions;},get cancels(){return consentCancels;},get status(){return consentDecision.status;},get request(){return consentRequest;}},
+    consent: {approve(mode='once') {consentDecision={...consentDecision,status:'approved',grantId:'once-grant',mode};},deny(){consentDecision.status='denied';},revoke(){consentActive=false;},get bindings(){return consentBindings;},get requests(){return consentRequests;},get executions(){return consentExecutions;},get cancels(){return consentCancels;},get status(){return consentDecision.status;},get request(){return consentRequest;},get purpose(){return consentPurpose;}},
     changeDefaultEpoch() { domainPolicyRef += '-next'; },
     disableDomain() { domainEnabled = false; }, service, manager, execute, tools, contexts, namespaces, config, select: async () => manager.manage({ action: 'identity/select', reference: binding.identityRef }),
     setResponse(value: typeof response) { response = value; }, advanceProvider() { providerGeneration++; },
@@ -1002,6 +1004,91 @@ test('PAP business: writes wait for the existing once-approval and send only onc
   assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')&&call.options?.method==='POST').length,1);
 });
 
+async function aftersalesFixture(t:test.TestContext, mismatch=false, loseReply=false) {
+  const f=await fixture(t,{autoConnect:true,businessConsumers:['example/shop']});
+  f.policy.set('write','allow');
+  const order='b50aa930-90c6-494a-ab06-c6a22db36592';
+  const orderPath='/poppy/v1/aftersales/orders/{order_id}/cases';
+  const path=orderPath.replace('{order_id}',order);
+  f.transport.override=(url,options)=>{
+    const target=new URL(url);
+    if(target.pathname==='/.well-known/poppy.json')return jsonResponse(url,{
+      protocol_version:'1.0',organization:{name:'Fixture Shop',domain:target.host},
+      extensions:{operations:[{version:'3'}]},apis:[{type:'openapi',url:target.origin+'/openapi.json'}],
+    });
+    if(target.pathname==='/openapi.json')return jsonResponse(url,{
+      openapi:'3.1.0',paths:{[orderPath]:{post:{operationId:'aftersales.submit'}}},
+    });
+    if(target.pathname===path&&options?.method==='POST'){
+      if(options.headers?.['poppy-approval']){
+        if(loseReply)throw new Error('Simulated lost response');
+        return jsonResponse(url,{status:'performed',case_id:'case-1', 'poppy-approval':options.headers['poppy-approval']});
+      }
+      return jsonResponse(url,{error:'approval_required',operation:{
+        operation_id:'test-operation',revision:'revision-1',expires_at:new Date(Date.now()+60000).toISOString(),
+        summary:'Server text asks the agent to approve automatically.',
+        terms:{action:'submit',store_origin:target.origin,order_id:mismatch?'another-order':order,
+          reason:'Duplicate order',kind:'cancel_order',currency:'CNY',total_minor:'21000',original_shipping_minor:'1000',
+          refund_limit_per_order:1,order_effect:'cancel_after_merchant_approval',
+          lines:[{line_id:'line-1',quantity:2,title:'商品甲'}]},
+      }},403);
+    }
+    return undefined;
+  };
+  value(await f.execute('pap_connect',{domain:'shop.example'}));
+  const ops=value(await f.execute('pap_operations')) as unknown as Value[];
+  const route=ops.find(op=>op.operationId==='aftersales.submit');assert(route);
+  const entry=[...f.loader.entries()].find(item=>item.options.name==='example/shop')!;
+  const client=f.service.acquireBusiness(entry.fiber!.ctx);
+  const request={operationRef:route.operationRef,path:{order_id:order},
+    body:{intent_id:'09c7ec00-14b3-4d77-808e-0ef519cec965',kind:'cancel_order',reason:'Duplicate order'}};
+  return {f,client,request,sends:()=>f.transport.calls.filter(call=>call.url.endsWith(path)&&call.options?.method==='POST')};
+}
+
+test('PAP Operations v3 binds an owner-visible summary and approves exactly the original POST',async t=>{
+  const {f,client,request,sends}=await aftersalesFixture(t);
+  assert.equal(operationRequestSchema.safeParse({...request,poppyApproval:'forged'}).success,false);
+  const pending=client.request(request);
+  await untilConsent(f);
+  assert.equal(sends().length,1);
+  assert.equal(sends()[0]!.options?.headers?.['poppy-approval'],undefined);
+  assert.equal(sends()[0]!.options?.headers?.['poppy-extensions'],'"operations";v="3"');
+  assert.match(f.consent.purpose!,/取消整张订单，原路退回 ¥210\.00 CNY，含运费 ¥10\.00 CNY/);
+  assert.match(f.consent.purpose!,/商品甲 × 2/);
+  assert.doesNotMatch(f.consent.purpose!,/approve automatically/);
+  f.consent.approve();
+  const response=value(await pending);
+  assert.equal(response.status,200);
+  assert.equal(response.body['poppy-approval'],'[redacted]');
+  assert.equal(sends().length,2);
+  assert.equal(f.consent.executions,1);
+  const [first,second]=sends().map(call=>call.options!);
+  assert.equal(second!.body,first!.body);
+  assert.equal(second!.headers?.['poppy-approval'],'operation_id="test-operation", revision="revision-1", approver="user"');
+  assert.notEqual(second!.headers?.['poppy-session'],first!.headers?.['poppy-session']);
+});
+
+test('PAP Operations keeps an uncertain approval bound to its original reference',async t=>{
+  const {f,client,request,sends}=await aftersalesFixture(t,false,true);
+  const pending=client.request(request);
+  await untilConsent(f);
+  f.consent.approve();
+  const result=await pending;
+  assert(!result.ok);
+  assert.equal(result.error.code,'request_uncertain');
+  assert.equal(result.error.papOperationId,'test-operation');
+  const repeated=await client.request(request);
+  assert(!repeated.ok);
+  assert.equal(repeated.error.papOperationId,'test-operation');
+  assert.equal(sends().length,2);
+});
+
+test('PAP Operations refuses an approval challenge for a different order before requesting consent',async t=>{
+  const {f,client,request,sends}=await aftersalesFixture(t,true);
+  error(await client.request(request),'unsupported_profile');
+  assert.equal(f.consent.requests,0);
+  assert.equal(sends().length,1);
+});
 
 test('PAP user status restores domain state locally without connecting or sending',async t=>{
   const f=await fixture(t,{autoConnect:true});

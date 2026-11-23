@@ -4,6 +4,7 @@ import { isUcpRead, supportsFrontviaConfirmation } from './ucp.js';
 import { FRONTVIA_CONFIRMATION_HEADER } from './frontvia-checkout.js';
 import { strictJson } from './strict-json.js';
 import { orderPdfMaxBytes } from './network.js';
+import { isOperationsRoute } from './operations-approval.js';
 import type { Company, HttpResponse, Operation, PapState, ProductOperationApproval, Route } from './types.js';
 import type { PapOperationRequest } from './product-api.js';
 
@@ -36,6 +37,7 @@ export function publicOperations(state: PapState, enabledOnly = false): object[]
       queryParameters: (route.parameters ?? []).filter(x => x.in === 'query').map(x => ({ name: x.name, required: x.required })),
       enabled: Boolean(approval), account: approval ? Boolean(state.sessions[approval.sessionRef]?.accountSlot) : false,
       requiresApproval: !isUcpRead(route) && (!['GET','HEAD'].includes(route.method) || Boolean(route.requiresConsent)),
+      ...(isOperationsRoute(company, route) ? { approvalProtocol: 'pap-operations-v3' } : {}),
       blocked: state.product?.disabled?.includes(reference) ?? false });
   }
   return entries;
@@ -85,7 +87,7 @@ export function prepareDiscoveredOperation(state: PapState, input: PapOperationR
     ...(Object.keys(headers).length ? { headers } : {}) } };
 }
 
-const privateFields = /^(?:token|access[_-]?token|refresh[_-]?token|id[_-]?token|authorization|proxy[_-]?authorization|dpop|poppy[_-]?session|private[_-]?key|client[_-]?secret|client[_-]?assertion|code[_-]?verifier|claim[_-]?secret|callbackRef)$/i;
+const privateFields = /^(?:token|access[_-]?token|refresh[_-]?token|id[_-]?token|authorization|proxy[_-]?authorization|dpop|poppy[_-]?(?:session|approval)|private[_-]?key|client[_-]?secret|client[_-]?assertion|code[_-]?verifier|claim[_-]?secret|callbackRef)$/i;
 export function privateValues(state: PapState, includeOAuthState = true): string[] {
   const values: (string | undefined)[] = [];
   for (const grant of Object.values(state.grants)) values.push(grant.accessToken, grant.refreshToken, grant.dpopKey?.handle);
