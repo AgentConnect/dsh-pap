@@ -1,10 +1,14 @@
 import https from 'node:https';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { BlockList, isIP } from 'node:net';
+import { z } from 'zod';
 import type { HttpResponse, HttpTransport } from './types.js';
 import { PapError, requirePap } from './errors.js';
+import { strictJson } from './strict-json.js';
 import { httpsUrl } from './util.js';
 
+const fakeIpv4 = new BlockList();
+fakeIpv4.addSubnet('198.18.0.0', 15, 'ipv4');
 const denied = new BlockList();
 for (const [address, prefix] of [['0.0.0.0',8],['10.0.0.0',8],['100.64.0.0',10],['127.0.0.0',8],['169.254.0.0',16],['172.16.0.0',12],['192.0.0.0',24],['192.0.2.0',24],['192.168.0.0',16],['198.18.0.0',15],['198.51.100.0',24],['203.0.113.0',24],['224.0.0.0',4],['240.0.0.0',4]] as const) denied.addSubnet(address, prefix, 'ipv4');
 const deniedV6 = new BlockList();
@@ -26,6 +30,63 @@ export interface SafeHttpsOptions {
 }
 export const orderPdfMaxBytes = 10 * 1024 * 1024;
 
+const dohMaxBytes = 16 * 1024;
+const dnsReply = z.object({
+  Status: z.literal(0),
+  TC: z.literal(false).optional(),
+  Question: z.tuple([z.object({ name: z.string().max(254), type: z.number() })]),
+  Answer: z.array(z.object({ name: z.string().max(254), type: z.number(), data: z.string().max(254) })).max(32).default([]),
+});
+const dnsName = (name: string) => name.toLowerCase().replace(/\.$/, '');
+
+function isPublicDnsName(name: string): boolean {
+  return name.length <= 253 && name.includes('.') &&
+    name.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)) &&
+    !/(?:^|\.)(?:alt|example|home\.arpa|internal|invalid|local|localhost|onion|test)$/.test(name);
+}
+
+async function resolveFakeIp(host: string, signal: AbortSignal): Promise<{ address: string; family: number }[]> {
+  // Bootstrap independently of system DNS, which can also synthesize an address
+  // for dns.google. The pinned IP still uses dns.google's SNI and certificate.
+  const dns = new SafeHttpsTransport({
+    lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+    maxBytes: dohMaxBytes,
+  });
+  const dnsSignal = AbortSignal.any([signal, AbortSignal.timeout(4000)]);
+  for (const [type, family] of [[1, 4], [28, 6]] as const) {
+    const query = new URLSearchParams({ name: host, type: String(type), edns_client_subnet: '0.0.0.0/0' });
+    const response = await dns.request(`https://dns.google/resolve?${query}`, {
+      headers: { accept: 'application/dns-json' }, signal: dnsSignal,
+    });
+    requirePap(response.status === 200, 'unsafe_destination');
+    let payload: unknown;
+    try { payload = strictJson(response.body, dohMaxBytes); }
+    catch { throw new PapError('unsafe_destination'); }
+    const reply = dnsReply.safeParse(payload);
+    requirePap(reply.success, 'unsafe_destination');
+    const { Question: [question], Answer: records } = reply.data;
+    requirePap(question.type === type && dnsName(question.name) === host, 'unsafe_destination');
+    let owner = host;
+    const visited = new Set<string>();
+    for (;;) {
+      requirePap(isPublicDnsName(owner) && !visited.has(owner), 'unsafe_destination');
+      visited.add(owner);
+      const matching = records.filter(record => dnsName(record.name) === owner);
+      const aliases = matching.filter(record => record.type === 5);
+      const answers = matching.filter(record => record.type === type);
+      if (!aliases.length) {
+        const addresses = answers.map(record => ({ address: record.data, family }));
+        requirePap(addresses.every(item => isIP(item.address) === family && isPublicAddress(item.address)), 'unsafe_destination');
+        if (addresses.length) return addresses;
+        break;
+      }
+      requirePap(aliases.length === 1 && !answers.length, 'unsafe_destination');
+      owner = dnsName(aliases[0]!.data);
+    }
+  }
+  return [];
+}
+
 export class SafeHttpsTransport implements HttpTransport {
   private active = 0;
   constructor(private readonly options: SafeHttpsOptions = {}) {}
@@ -41,6 +102,7 @@ export class SafeHttpsTransport implements HttpTransport {
     const url = httpsUrl(value);
     requirePap(url.href.length <= 8192 && Buffer.byteLength(options.body ?? '') <= (this.options.maxRequestBytes ?? 1024 * 1024), 'unsafe_destination');
     requirePap(Object.keys(options.headers ?? {}).length <= 64 && Object.entries(options.headers ?? {}).every(([key,value]) => key.length + value.length <= 131072 && !/[\r\n]/.test(key + value)), 'unsafe_destination');
+    requirePap(!options.signal?.aborted, 'request_uncertain');
     requirePap(this.active < (this.options.maxConcurrent ?? 8), 'rate_limited');
     this.active++;
     const controller = new AbortController();
@@ -50,12 +112,18 @@ export class SafeHttpsTransport implements HttpTransport {
     try {
       const host = url.hostname.replace(/^\[|\]$/g, '');
       const lookup = this.options.lookup ?? (async (name: string) => dnsLookup(name, { all: true, verbatim: true }));
-      const addresses = await Promise.race([
+      let addresses = await Promise.race([
         isIP(host) ? Promise.resolve([{ address: host, family: isIP(host) }]) : lookup(host),
         new Promise<never>((_, reject) => controller.signal.addEventListener('abort', () => reject(new PapError('request_uncertain')), { once: true })),
       ]);
       requirePap(addresses.length > 0 && addresses.length <= 32, 'unsafe_destination');
       const allowPrivate = this.options.privateOrigins?.includes(url.origin) === true;
+      const name = dnsName(host);
+      if (!allowPrivate && !this.options.lookup && !isIP(host) && isPublicDnsName(name) &&
+          addresses.every(item => isIP(item.address) === 4 && fakeIpv4.check(item.address, 'ipv4'))) {
+        addresses = await resolveFakeIp(name, controller.signal);
+        requirePap(addresses.length > 0, 'unsafe_destination');
+      }
       requirePap(allowPrivate || addresses.every(item => isPublicAddress(item.address)), 'unsafe_destination');
       requirePap(!controller.signal.aborted && !options.signal?.aborted, 'request_uncertain');
       // Resolution is pinned to this connection. The HTTP stack never resolves the host again.
