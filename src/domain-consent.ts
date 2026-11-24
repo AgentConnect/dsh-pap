@@ -3,7 +3,8 @@ import { PapError } from './errors.js';
 
 export interface ConsentDecision { id: string; status: string; version: number; grantId?: string; mode?: string }
 export interface DomainOperationConsumer {
-  request(input: { requestId: string; purpose: string; request: Request }): Promise<ConsentDecision>;
+  readonly approvalDetailsVersion?: 1;
+  request(input: { requestId: string; purpose: string; request: Request; details?: import("./operations-approval.js").OperationChallenge["details"] }): Promise<ConsentDecision>;
   status(id: string): Promise<ConsentDecision>;
   cancel(id: string, version: number): Promise<ConsentDecision>;
   execute<T>(grantId: string, request: Request, effect: (assertActive: () => Promise<void>) => Promise<T>): Promise<T>;

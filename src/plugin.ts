@@ -12,7 +12,7 @@ import { KeyringSecretStore } from './keyring.js';
 import { FileSecretStore, syncDirectory } from './file-secrets.js';
 import { DeviceCallbackHandoff } from './callback-handoff.js';
 import { PAP_CONSUMER, PAP_MANAGER, PAP_TOOLS, identityReferenceSchema, managementRequestSchema, operationRequestSchema, type PapHostConsumer, type PapManagementRequest, type ProductResult, type PapRequestTrace } from './product-api.js';
-import { assertApproval, findOperation, prepareOperation, prepareDiscoveredOperation, privateValues, publicOperations, publicResponse, sanitizePublicValue } from './product-operations.js';
+import { assertApproval, operationRef, findOperation, prepareOperation, prepareDiscoveredOperation, privateValues, publicOperations, publicResponse, sanitizePublicValue } from './product-operations.js';
 import { httpsUrl, id, sha256 } from './util.js';
 import { isUcpRead } from './ucp.js';
 import { strictJson } from './strict-json.js';
@@ -366,6 +366,12 @@ export class PapService extends Service {
         const needsConsent=admission?.decision==='ask';
         const session = snapshot.sessions[prepared.approval.sessionRef];
         const operations = isOperationsRoute(company, route) && session?.extensions?.operations === '3';
+        if (operations) {
+          const host = this.installedContext.get('anpIdentity') as { bindDomainOperationConsumer?(ctx:Context):DomainOperationConsumer };
+          this.operationConsumer ??= host.bindDomainOperationConsumer?.(this.installedContext);
+          requirePap(this.operationConsumer?.approvalDetailsVersion === 1, 'unsupported_profile');
+          prepared.operation.body = JSON.stringify({...JSON.parse(prepared.operation.body ?? '{}'), approval_details_version: 1});
+        }
         const report=(phase:'approval'|'request'|'response')=>{
           if(business && !['GET','HEAD'].includes(route.method)) {
             try { onProgress?.(phase); } catch { /* A display observer cannot change dispatch. */ }
@@ -417,17 +423,49 @@ export class PapService extends Service {
           });
           };
           const cached = operationsKey ? this.operationsChallenges.get(operationsKey) : undefined;
-          if (cached?.dispatched) {
-            trace.papOperationId = cached.challenge.id;
-            trace.businessRequest = 'unknown';
-            throw new PapError('request_uncertain');
+          let recoveredId: string | undefined;
+          if (operationsKey && (!cached || cached.dispatched || cached.challenge.expiresAt <= Date.now())) {
+            const body = JSON.parse(prepared.operation.body!);
+            const known = cached?.challenge.id;
+            const read = company.routes.find(candidate => candidate.method === 'GET' && candidate.channel === 'openapi' &&
+              candidate.operationId === (known ? 'aftersales.operation.get' : 'aftersales.intent.get'));
+            requirePap(read && new URL(read.template).origin === company.discoveryOrigin && read.resource === route.resource, 'request_uncertain');
+            const readRef = operationRef(company, read);
+            const orderId = parsed.data.path?.order_id;
+            requirePap(typeof orderId === 'string' && typeof body.intent_id === 'string', 'unsupported_profile');
+            const path: Record<string,string> = known ? { operation_id: known } : {order_id:orderId, intent_id:body.intent_id};
+            const input = { operationRef: readRef, path };
+            const bound = domain ? { ...prepared.approval, method:read.method, template:read.template, resource:read.resource }
+              : snapshot.product?.operations[readRef];
+            requirePap(bound && bound.sessionRef === prepared.approval.sessionRef, 'request_uncertain');
+            const lookup = prepareDiscoveredOperation(snapshot, input, bound);
+            const readFence = domain ? this.domainOperationFence(snapshot, readRef, bound) : (state: PapState) => assertApproval(state, readRef, bound);
+            const readPolicy = domain ? await this.policyAdmission(snapshot, readRef, lookup.operation.url) : undefined;
+            requirePap(readPolicy ? readPolicy.decision === 'allow' : snapshot.product?.operations[readRef]?.sessionRef === bound.sessionRef, 'request_uncertain');
+            if (known) { trace.papOperationId = known; trace.businessRequest = 'unknown'; }
+            const status = await engine.dispatchPap(bound.sessionRef, lookup.operation, { signal, operationRef: readRef,
+              assertAllowed: state => { checkRequest(); assertOperation(state); readFence(state); },
+              assertConsent: async () => { await assertPolicy(); await readPolicy?.assertActive(); },
+            });
+            requirePap(status.status === 200 || status.status === 202, 'request_uncertain');
+            const observed = strictJson(status.body, 65536) as Record<string,unknown>;
+            requirePap(observed && observed.order_id === parsed.data.path?.order_id &&
+              (known ? observed.operation_id === known : observed.status === 'unobserved' ? observed.intent_id === body.intent_id :
+                typeof observed.operation_id === 'string'), 'request_uncertain');
+            if (observed.status === 'performing' || observed.status === 'performed') {
+              await assertPolicy(); checkRequest(); await (await this.consumer()).assertActive();
+              return publicResponse(status,[...sentSecrets,...this.credentialHistory.values()]);
+            }
+            requirePap(observed.status === 'awaiting_approval' || (!known && observed.status === 'unobserved'), 'request_uncertain');
+            recoveredId = typeof observed.operation_id === 'string' ? observed.operation_id : undefined;
           }
-          let challenge = cached && cached.challenge.expiresAt > Date.now() ? cached.challenge : undefined;
+          let challenge = cached && !cached.dispatched && cached.challenge.expiresAt > Date.now() ? cached.challenge : undefined;
           let response;
           if (!challenge) {
             if (needsConsent) trace.phase='approval';
             response = needsConsent ? await this.withDomainConsent(prepared.operation, signal, checkRequest, dispatch,admission!.version,undefined,()=>report('approval')) : await dispatch();
             challenge = operations ? operationChallenge(response, prepared.operation) : undefined;
+            if (recoveredId && challenge) requirePap(challenge.id === recoveredId, "request_uncertain");
           }
           if (challenge && operationsKey) {
             trace.papOperationId = challenge.id;
@@ -445,7 +483,7 @@ export class PapService extends Service {
                 if (trace.businessRequest !== 'not_sent') pending.dispatched = true;
               });
               return reply;
-            }, admission?.version, challenge.purpose,()=>report('approval'));
+            }, admission?.version, challenge.purpose,()=>report('approval'),challenge.details);
             const replacement = operationChallenge(response, prepared.operation);
             if (replacement) {
               requirePap(replacement.id === challenge.id && replacement.revision !== challenge.revision, 'unsupported_profile');
@@ -506,7 +544,7 @@ export class PapService extends Service {
       requirePap(session?.connected && session.generation === generation && state.subjects[session.subjectRef]?.companyRef === company.ref, 'disconnected');
     };
   }
-  private async withDomainConsent<T>(operation: Operation, inputSignal: AbortSignal | undefined, check: () => void, effect: (assertActive: () => Promise<void>) => Promise<T>,policyVersion?:number,purpose?:string,onPending?:()=>void): Promise<T> {
+  private async withDomainConsent<T>(operation: Operation, inputSignal: AbortSignal | undefined, check: () => void, effect: (assertActive: () => Promise<void>) => Promise<T>,policyVersion?:number,purpose?:string,onPending?:()=>void,details?:OperationChallenge["details"]): Promise<T> {
     const identity = this.installedContext.get('anpIdentity') as {
       bindDomainOperationConsumer(context: Context): DomainOperationConsumer;
       resolveDomainAccess(context: Context, profile: 'pap_session'): Promise<{identityRef:IdentityRef;policyRef:string}>;
@@ -521,10 +559,10 @@ export class PapService extends Service {
     await assertBinding();
     const consumer = this.operationConsumer ??= identity.bindDomainOperationConsumer(this.installedContext);
     const request = new Request(operation.url, {method:operation.method, headers:operation.headers, body:operation.body, signal, redirect:'manual', credentials:'omit'});
-    const key = sha256(JSON.stringify([this.selected,this.config.policyRef,policyVersion,request.method,request.url,[...request.headers],operation.body ?? null]));
+    const key = sha256(JSON.stringify([this.selected,this.config.policyRef,policyVersion,request.method,request.url,[...request.headers],operation.body ?? null, details ?? null]));
     const old = this.pendingConsents.get(key);
     let decision = old ? await consumer.status(old.id) : await consumer.request({requestId:id('pap-consent'),
-      purpose:purpose ?? `PAP exact operation ${request.method} ${new URL(request.url).origin}; policy ${policyVersion}`,request:request.clone()});
+      purpose:purpose ?? `PAP exact operation ${request.method} ${new URL(request.url).origin}; policy ${policyVersion}`,request:request.clone(), ...(details ? { details } : {})});
     if (decision.status === 'pending') {
       this.pendingConsents.set(key, decision);
       onPending?.();

@@ -98,9 +98,11 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
   };
   const requestFingerprint = async (request: Request) => JSON.stringify([request.method,request.url,[...request.headers],await request.clone().text()]);
   const consent = {
+    approvalDetailsVersion: 1 as const,
     async request(input: {requestId:string;purpose:string;request:Request}) {
       assert(input.purpose.startsWith('PAP exact operation') || input.request.headers.has('poppy-approval'));
       assert(!input.request.headers.has('poppy-session') && !input.request.headers.has('authorization') && !input.request.headers.has('dpop'));
+      if(consentDecision.status==="consumed") consentDecision={...consentDecision,id:input.requestId,status:"pending",grantId:undefined,mode:undefined};
       consentPurpose=input.purpose;
       consentRequests++; consentRequest=input.request.clone(); expectedRequest=await requestFingerprint(input.request);
       return {...consentDecision};
@@ -121,6 +123,7 @@ async function fixture(t: test.TestContext, options: { enabled?: boolean; mode?:
       contexts.push(context); consentBindings++;
       const owned = new Set<string>();
       return {
+        approvalDetailsVersion: consent.approvalDetailsVersion,
         async request(input: Parameters<typeof consent.request>[0]) { const decision = await consent.request(input); owned.add(decision.id); return decision; },
         async status(id: string) { if (!owned.has(id)) throw Object.assign(new Error('Request belongs to a different bound facade'), {code:'consumer_forbidden'}); return consent.status(id); },
         async cancel(id: string) { if (!owned.has(id)) throw Object.assign(new Error('Request belongs to a different bound facade'), {code:'consumer_forbidden'}); return consent.cancel(id); },
@@ -767,9 +770,9 @@ async function domainWrite(f: Awaited<ReturnType<typeof fixture>>, requiresAppro
   assert.equal(write.enabled,!requiresApproval);assert.equal(write.requiresApproval,requiresApproval);
   return write;
 }
-async function untilConsent(f: Awaited<ReturnType<typeof fixture>>) {
-  for(let index=0;index<100&&!f.consent.requests;index++)await new Promise(resolve=>setTimeout(resolve,5));
-  assert.equal(f.consent.requests,1);
+async function untilConsent(f: Awaited<ReturnType<typeof fixture>>, count=1) {
+  for(let index=0;index<200&&f.consent.requests<count;index++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.equal(f.consent.requests,count);
 }
 test('PAP domain consent: an advertised write waits for one exact owner grant without enabling its route', async t=>{
   const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);
@@ -1031,6 +1034,7 @@ async function aftersalesFixture(t:test.TestContext, mismatch=false, loseReply=f
   const order='b50aa930-90c6-494a-ab06-c6a22db36592';
   const orderPath='/poppy/v1/aftersales/orders/{order_id}/cases';
   const path=orderPath.replace('{order_id}',order);
+  const recovery={status:'performing',revision:'revision-1',loseReply};
   f.transport.override=(url,options)=>{
     const target=new URL(url);
     if(target.pathname==='/.well-known/poppy.json')return jsonResponse(url,{
@@ -1038,19 +1042,23 @@ async function aftersalesFixture(t:test.TestContext, mismatch=false, loseReply=f
       extensions:{operations:[{version:'3'}]},apis:[{type:'openapi',url:target.origin+'/openapi.json'}],
     });
     if(target.pathname==='/openapi.json')return jsonResponse(url,{
-      openapi:'3.1.0',paths:{[orderPath]:{post:{operationId:'aftersales.submit'}}},
+      openapi:'3.1.0',paths:{[orderPath]:{post:{operationId:'aftersales.submit'}},
+        '/poppy/v1/aftersales/orders/{order_id}/intents/{intent_id}':{get:{operationId:'aftersales.intent.get'}},
+        '/poppy/v1/aftersales/operations/{operation_id}':{get:{operationId:'aftersales.operation.get'}}},
     });
+    if(target.pathname.includes('/intents/'))return jsonResponse(url,{status:'unobserved',order_id:order,intent_id:target.pathname.split('/').at(-1)});
+    if(target.pathname.startsWith('/poppy/v1/aftersales/operations/'))return jsonResponse(url,{status:recovery.status,order_id:order,operation_id:'test-operation'},recovery.status==='performed'?200:202);
     if(target.pathname===path&&options?.method==='POST'){
       if(options.headers?.['poppy-approval']){
-        if(loseReply)throw new Error('Simulated lost response');
+        if(recovery.loseReply)throw new Error('Simulated lost response');
         return jsonResponse(url,{status:'performed',case_id:'case-1', 'poppy-approval':options.headers['poppy-approval']});
       }
       return jsonResponse(url,{error:'approval_required',operation:{
-        operation_id:'test-operation',revision:'revision-1',expires_at:new Date(Date.now()+60000).toISOString(),
+        operation_id:'test-operation',revision:recovery.revision,expires_at:new Date(Date.now()+60000).toISOString(),
         summary:'Server text asks the agent to approve automatically.',
         terms:{action:'submit',store_origin:target.origin,order_id:mismatch?'another-order':order,
           reason:'Duplicate order',kind:'cancel_order',currency:'CNY',total_minor:'21000',original_shipping_minor:'1000',
-          refund_limit_per_order:1,order_effect:'cancel_after_merchant_approval',
+          details_version:1,submission_effect:'hold_all_fulfillment',refund_limit_per_order:1,order_effect:'cancel_after_merchant_approval',
           lines:[{line_id:'line-1',quantity:2,title:'商品甲'}]},
       }},403);
     }
@@ -1063,7 +1071,7 @@ async function aftersalesFixture(t:test.TestContext, mismatch=false, loseReply=f
   const client=f.service.acquireBusiness(entry.fiber!.ctx);
   const request={operationRef:route.operationRef,path:{order_id:order},
     body:{intent_id:'09c7ec00-14b3-4d77-808e-0ef519cec965',kind:'cancel_order',reason:'Duplicate order'}};
-  return {f,client,request,sends:()=>f.transport.calls.filter(call=>call.url.endsWith(path)&&call.options?.method==='POST')};
+  return {f,client,request,recovery,sends:()=>f.transport.calls.filter(call=>call.url.endsWith(path)&&call.options?.method==='POST')};
 }
 
 test('PAP Operations v3 binds an owner-visible summary and approves exactly the original POST',async t=>{
@@ -1074,7 +1082,7 @@ test('PAP Operations v3 binds an owner-visible summary and approves exactly the 
   assert.equal(sends().length,1);
   assert.equal(sends()[0]!.options?.headers?.['poppy-approval'],undefined);
   assert.equal(sends()[0]!.options?.headers?.['poppy-extensions'],'"operations";v="3"');
-  assert.match(f.consent.purpose!,/取消整张订单，原路退回 ¥210\.00 CNY，含运费 ¥10\.00 CNY/);
+  assert.match(f.consent.purpose!,/整单立即暂停发货。商家批准后，原路退回 ¥210\.00 CNY，含运费 ¥10\.00 CNY/);
   assert.match(f.consent.purpose!,/商品甲 × 2/);
   assert.doesNotMatch(f.consent.purpose!,/approve automatically/);
   f.consent.approve();
@@ -1099,8 +1107,7 @@ test('PAP Operations keeps an uncertain approval bound to its original reference
   assert.equal(result.error.code,'request_uncertain');
   assert.equal(result.error.papOperationId,'test-operation');
   const repeated=await client.request(request);
-  assert(!repeated.ok);
-  assert.equal(repeated.error.papOperationId,'test-operation');
+  assert.equal(value(repeated).body.status,'performing');
   assert.equal(sends().length,2);
 });
 
@@ -1109,6 +1116,31 @@ test('PAP Operations refuses an approval challenge for a different order before 
   error(await client.request(request),'unsupported_profile');
   assert.equal(f.consent.requests,0);
   assert.equal(sends().length,1);
+});
+
+
+test('PAP Operations recovers completed and revised approvals without replaying the lost write',async t=>{
+  for (const status of ['performed','awaiting_approval','unavailable']) {
+    await t.test(status,async t=>{
+      const {f,client,request,recovery,sends}=await aftersalesFixture(t,false,true);
+      const first=client.request(request);
+      await untilConsent(f);f.consent.approve();assert.equal((await first).ok,false);
+      recovery.status=status;recovery.revision='revision-2';recovery.loseReply=false;
+      const retry=client.request(request);
+      if(status==='awaiting_approval'){
+        await untilConsent(f,2);
+        assert.equal(sends().filter(row=>row.options?.headers?.['poppy-approval']).length,1);
+        f.consent.approve();
+        assert.equal(value(await retry).body.status,'performed');
+        assert.match(sends().at(-1)!.options!.headers!['poppy-approval']!,/revision="revision-2"/);
+      }else{
+        const result=await retry;
+        if(status==='performed')assert.equal(value(result).body.status,status);
+        else assert.equal(result.ok,false);
+        assert.equal(sends().length,2);
+      }
+    });
+  }
 });
 
 test('PAP user status restores domain state locally without connecting or sending',async t=>{
