@@ -24,6 +24,7 @@ const messages:Record<string,string> = {
   callback_not_ready:'浏览器登录尚未完成，请完成后再次领取。',callback_claimed:'该登录结果已领取，请刷新状态或重新发起。',callback_expired:'登录已过期，请重新发起。',
   reauthorization_required:'账户需要重新登录。',revocation_pending:'本地已停止账户使用，远端撤销仍待确认。',state_conflict:'连接状态已变化，请刷新后重试。',
   disconnected:'连接已停止，请刷新状态。',request_uncertain:'请求结果不确定，请先确认远端状态。',rate_limited:'请求暂受限，请稍后重试。',
+  request_not_sent:'暂时无法完成域名解析，请检查网络后重试。',
 };
 class SafeMessage extends Error { constructor(readonly displayText:string){super('PAP user operation unavailable');} }
 function unwrap(response:any):unknown {

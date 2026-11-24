@@ -502,14 +502,19 @@ export class PapClient {
         headers.dpop = await lease.signDpopProof({ key, scope: scopeFor(subject, accountSlot), httpMethod: 'POST', httpUri: target, nonce });
       }
       await lease.assertActive(); const signed = { body, headers };
-      let sent: Promise<{ response?: HttpResponse; failed?: true }> | undefined;
+      let sent: Promise<{ response: HttpResponse } | { error: PapError }> | undefined;
       await this.store.transaction(async state => {
         try { await lease.assertActive(); } catch { throw new PapError('permission_denied'); }
         this.assertWaitActive(state, context); assertCooldownElapsed(state, cooldownKey, this.clock());
         archiveCredentials(state, [fields.refresh_token, control.purpose === 'revoke' ? fields.token : undefined]);
-        sent = this.transport.request(target, { method: 'POST', headers: signed.headers, body: signed.body }).then(response => ({ response }), () => ({ failed: true as const }));
+        sent = this.transport.request(target, { method: 'POST', headers: signed.headers, body: signed.body }).then(
+          response => ({ response }),
+          error => ({ error: error instanceof PapError && error.code === 'request_not_sent' ? error : new PapError('request_uncertain') }),
+        );
       });
-      const outcome = await sent!; requirePap(outcome.response && !outcome.failed, 'request_uncertain'); const result = outcome.response;
+      const outcome = await sent!;
+      if ('error' in outcome) throw outcome.error;
+      const result = outcome.response;
       if (control.purpose !== 'revoke' && result.status === 200) {
         const received = parseJson(result);
         const values = [received.access_token,received.refresh_token].filter((value): value is string => typeof value === 'string' && value.length > 0 && value.length <= 65536);
@@ -576,7 +581,17 @@ export class PapClient {
       });
       requirePap(committed, 'revocation_pending');
     } catch (error) {
-      await this.store.transaction(current => { const grant = current.grants[grantRef]; if (grant?.generation === claimed.generation && grant.status === 'refreshing') { grant.status = error instanceof PapError && error.code === 'request_uncertain' ? 'uncertain' : error instanceof PapError && ['rate_limited','disconnected'].includes(error.code) ? 'active' : 'reauthorization_required'; grant.generation++; } }); throw error;
+      await this.store.transaction(current => {
+        const grant = current.grants[grantRef];
+        if (grant?.generation !== claimed.generation || grant.status !== 'refreshing') return;
+        const code = error instanceof PapError ? error.code : undefined;
+        if (code === 'request_uncertain') grant.status = 'uncertain';
+        else if (code === 'request_not_sent' || code === 'rate_limited' || code === 'disconnected')
+          grant.status = 'active';
+        else grant.status = 'reauthorization_required';
+        grant.generation++;
+      });
+      throw error;
     }
   }
   async signOutAccount(subjectRef: string, accountSlot: string): Promise<{ status: 'signed_out' | 'revocation_pending' }> {
