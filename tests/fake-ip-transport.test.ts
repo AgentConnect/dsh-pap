@@ -70,38 +70,52 @@ async function pinnedAddress(url: URL, options: https.RequestOptions): Promise<L
 }
 
 test('TUN fake-IP resolves through pinned DoH and sends the PAP request only to the public merchant', async t => {
-  const { calls, resolverCalls } = mockNetwork(t, [fakeIp, { address: '198.19.2.6', family: 4 }], url => ({
-    body: url.hostname === shop ? { protocol_version: '1.0' } : reply(1, [
+  const { calls, resolverCalls } = mockNetwork(t, [fakeIp, { address: '198.19.2.6', family: 4 }], url => {
+    if (url.hostname === shop) return { body: { protocol_version: '1.0' } };
+    const type = url.searchParams.get('type') === '1' ? 1 : 28;
+    return { body: reply(type, [
       record(`${shop}.`, 5, 'edge.example.com.'),
-      record('edge.example.com.', 1, shopIp.address),
-    ]),
-  }));
-  const response = await new SafeHttpsTransport().request(documentUrl, { headers: { 'Poppy-Session': 'fixture-session' } });
+      record('edge.example.com.', type, type === 1 ? shopIp.address : shopIpv6.address),
+    ]) };
+  });
+  const headers = { 'Poppy-Session': 'fixture-session', authorization: 'DPoP fixture-token', dpop: 'fixture-proof' };
+  const response = await new SafeHttpsTransport().request(documentUrl, { headers });
   assert.equal(response.status, 200);
   assert.equal(response.url, documentUrl);
   assert.deepEqual(resolverCalls, [shop]);
-  assert.equal(calls.length, 2);
-  const [resolver, merchant] = calls;
-  assert(resolver && merchant);
-  assert.equal(resolver.url.origin, 'https://dns.google');
-  assert.equal(resolver.url.searchParams.get('name'), shop);
-  assert(!Object.keys(resolver.options.headers ?? {}).some(key => /^poppy-session$/i.test(key)));
-  assert.deepEqual(await pinnedAddress(resolver.url, resolver.options), [{ address: '8.8.8.8', family: 4 }]);
+  assert.equal(calls.length, 3);
+  const [a, aaaa, merchant] = calls;
+  assert(a && aaaa && merchant);
+  assert.deepEqual([a.url.searchParams.get('type'), aaaa.url.searchParams.get('type')], ['1', '28']);
+  for (const resolver of [a, aaaa]) {
+    assert.equal(resolver.url.origin, 'https://dns.google');
+    assert.equal(resolver.url.searchParams.get('name'), shop);
+    assert.deepEqual(resolver.options.headers, { accept: 'application/dns-json', host: 'dns.google' });
+    assert.deepEqual(await pinnedAddress(resolver.url, resolver.options), [{ address: '8.8.8.8', family: 4 }]);
+  }
   assert.equal(merchant.url.href, documentUrl);
   assert.equal(merchant.options.servername ?? merchant.url.hostname, shop);
   assert.notEqual(merchant.options.rejectUnauthorized, false);
-  assert.deepEqual(merchant.options.headers, { 'Poppy-Session': 'fixture-session', host: shop });
+  assert.deepEqual(merchant.options.headers, { ...headers, host: shop });
   assert.deepEqual(await pinnedAddress(merchant.url, merchant.options), [shopIp]);
 });
 
-test('TUN fake-IP can resolve a merchant with only an AAAA record', async t => {
-  const { calls } = mockNetwork(t, [fakeIp], url => ({
-    body: url.hostname === shop ? {} : calls.length === 1 ? reply(1, []) : reply(28, [record(`${shop}.`, 28, shopIpv6.address)]),
-  }));
-  assert.equal((await new SafeHttpsTransport().request(documentUrl)).status, 200);
-  const merchant = calls.at(-1);
-  assert(merchant && calls.length === 3);
-  assert.deepEqual(await pinnedAddress(merchant.url, merchant.options), [shopIpv6]);
+test('TUN fake-IP can resolve a merchant with records in only one family', async t => {
+  for (const [recordType, address] of [[1, shopIp], [28, shopIpv6]] as const) {
+    await t.test(`records of type ${recordType}`, async t => {
+      const { calls } = mockNetwork(t, [fakeIp], url => {
+        if (url.hostname === shop) return { body: {} };
+        const type = url.searchParams.get('type') === '1' ? 1 : 28;
+        const body = type === recordType ? reply(type, [record(`${shop}.`, type, address.address)])
+          : { Status: 0, Question: [{ name: `${shop}.`, type }] };
+        return { body };
+      });
+      assert.equal((await new SafeHttpsTransport().request(documentUrl)).status, 200);
+      const merchant = calls.at(-1);
+      assert(merchant && calls.length === 3);
+      assert.deepEqual(await pinnedAddress(merchant.url, merchant.options), [address]);
+    });
+  }
 });
 
 test('ordinary public DNS connects directly and unsafe or explicit resolutions do not fall back', async t => {
@@ -143,9 +157,20 @@ test('unsafe or unrelated DNS-over-HTTPS answers never dial the merchant', async
   }
 });
 
-test('the transport timeout also bounds the DoH request', async t => {
-  const { calls } = mockNetwork(t, [fakeIp], () => undefined);
-  await assert.rejects(new SafeHttpsTransport({ timeoutMs: 75 }).request(documentUrl), { code: 'request_uncertain' });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0]?.options.signal?.aborted, true);
+test('a failed AAAA query still stops the merchant request after a public A answer', async t => {
+  for (const [description, aaaa, code] of [
+    ['DNS error', { body: { ...reply(28, []), Status: 2 } }, 'unsafe_destination'],
+    ['timeout', undefined, 'request_uncertain'],
+  ] as const) {
+    await t.test(description, async t => {
+      const { calls } = mockNetwork(t, [fakeIp], url => {
+        if (url.hostname === shop) return { body: {} };
+        if (url.searchParams.get('type') === '1') return { body: reply(1, [record(`${shop}.`, 1, shopIp.address)]) };
+        return aaaa;
+      });
+      await assert.rejects(new SafeHttpsTransport({ timeoutMs: 150 }).request(documentUrl), { code });
+      assert.deepEqual(calls.map(call => call.url.searchParams.get('type')), ['1', '28']);
+      if (code === 'request_uncertain') assert.equal(calls[1]?.options.signal?.aborted, true);
+    });
+  }
 });

@@ -160,7 +160,7 @@ PAP 状态继续加密保存，Agent/Delegation/DPoP 私钥仍由 ANP Identity �
 
 生产网络默认 `SafeHttpsTransport`。受信 Host 的 `papHost.transport` 仅用于显式部署连接策略和组件验证，Remote/Tools 不能覆盖。`privateOrigins`、`portOverrides` 和自定义 DNS 仅适用于明确配置的隔离部署/组件；TLS 始终验证，连接映射只改变 TCP 端口，Host 与 Session htu 保持逻辑 URL。
 
-系统 DNS 对公网域名仅返回 `198.18.0.0/15` IPv4 地址时，传输层通过固定地址访问 Google DNS over HTTPS，仅查询域名。每次连接都绑定到经验证的公网解析结果，并使用原域名校验证书。私网和混合解析结果仍会被拒绝。
+系统 DNS 对公网域名仅返回 `198.18.0.0/15` IPv4 地址时，传输层通过固定地址访问 Google DNS over HTTPS，仅查询域名。连接前检查 A 和 AAAA 两组记录，任一组包含非公网地址都会拒绝。每次连接都绑定到经验证的公网地址，并使用原域名校验证书。
 
 账户 callback 固定为当前实际发布 CIMD 中的 HTTPS URI。F 不取得管理 DeviceAccess，C 保留 exact-device credential/checkpoint/proof；只提交 state/claim 的独立 SHA-256 摘要与一次领取 secret。verifier、PAP User/Agent ID、sid、第三方 Token 均不交给 callback 服务，完整领取引用只在加密 Store。C 逐次检查当前调用者、政策、publication、provider、manager 以及目标 issuer/resource。
 

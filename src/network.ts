@@ -53,6 +53,8 @@ async function resolveFakeIp(host: string, signal: AbortSignal): Promise<{ addre
     maxBytes: dohMaxBytes,
   });
   const dnsSignal = AbortSignal.any([signal, AbortSignal.timeout(4000)]);
+  const resolved: { address: string; family: number }[] = [];
+  // Validate both families before connecting, keeping IPv4 first for the pinned address.
   for (const [type, family] of [[1, 4], [28, 6]] as const) {
     const query = new URLSearchParams({ name: host, type: String(type), edns_client_subnet: '0.0.0.0/0' });
     const response = await dns.request(`https://dns.google/resolve?${query}`, {
@@ -77,14 +79,15 @@ async function resolveFakeIp(host: string, signal: AbortSignal): Promise<{ addre
       if (!aliases.length) {
         const addresses = answers.map(record => ({ address: record.data, family }));
         requirePap(addresses.every(item => isIP(item.address) === family && isPublicAddress(item.address)), 'unsafe_destination');
-        if (addresses.length) return addresses;
+        resolved.push(...addresses);
         break;
       }
       requirePap(aliases.length === 1 && !answers.length, 'unsafe_destination');
       owner = dnsName(aliases[0]!.data);
     }
   }
-  return [];
+  requirePap(!dnsSignal.aborted, 'request_uncertain');
+  return resolved;
 }
 
 export class SafeHttpsTransport implements HttpTransport {
@@ -122,7 +125,7 @@ export class SafeHttpsTransport implements HttpTransport {
       if (!allowPrivate && !this.options.lookup && !isIP(host) && isPublicDnsName(name) &&
           addresses.every(item => isIP(item.address) === 4 && fakeIpv4.check(item.address, 'ipv4'))) {
         addresses = await resolveFakeIp(name, controller.signal);
-        requirePap(addresses.length > 0, 'unsafe_destination');
+        requirePap(addresses.length > 0 && addresses.length <= 32, 'unsafe_destination');
       }
       requirePap(allowPrivate || addresses.every(item => isPublicAddress(item.address)), 'unsafe_destination');
       requirePap(!controller.signal.aborted && !options.signal?.aborted, 'request_uncertain');
