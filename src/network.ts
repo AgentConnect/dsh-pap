@@ -32,7 +32,7 @@ export const orderPdfMaxBytes = 10 * 1024 * 1024;
 
 const dohMaxBytes = 16 * 1024;
 const dnsReply = z.object({
-  Status: z.literal(0),
+  Status: z.union([z.literal(0), z.literal(2)]),
   TC: z.literal(false).optional(),
   Question: z.tuple([z.object({ name: z.string().max(254), type: z.number() })]),
   Answer: z.array(z.object({ name: z.string().max(254), type: z.number(), data: z.string().max(254) })).max(32).default([]),
@@ -59,15 +59,22 @@ async function resolveFakeIp(host: string, signal: AbortSignal): Promise<{ addre
     const query = new URLSearchParams({ name: host, type: String(type), edns_client_subnet: '0.0.0.0/0' });
     const response = await dns.request(`https://dns.google/resolve?${query}`, {
       headers: { accept: 'application/dns-json' }, signal: dnsSignal,
+    }).catch(error => {
+      // An uncertain resolver request cannot have reached the original destination.
+      if (error instanceof PapError && error.code === 'request_uncertain')
+        throw new PapError('request_not_sent');
+      throw error;
     });
+    requirePap(response.status !== 429 && response.status < 500, 'request_not_sent');
     requirePap(response.status === 200, 'unsafe_destination');
     let payload: unknown;
     try { payload = strictJson(response.body, dohMaxBytes); }
     catch { throw new PapError('unsafe_destination'); }
     const reply = dnsReply.safeParse(payload);
     requirePap(reply.success, 'unsafe_destination');
-    const { Question: [question], Answer: records } = reply.data;
+    const { Status: status, Question: [question], Answer: records } = reply.data;
     requirePap(question.type === type && dnsName(question.name) === host, 'unsafe_destination');
+    requirePap(status === 0, 'request_not_sent');
     let owner = host;
     const visited = new Set<string>();
     for (;;) {
@@ -86,7 +93,7 @@ async function resolveFakeIp(host: string, signal: AbortSignal): Promise<{ addre
       owner = dnsName(aliases[0]!.data);
     }
   }
-  requirePap(!dnsSignal.aborted, 'request_uncertain');
+  requirePap(!dnsSignal.aborted, 'request_not_sent');
   return resolved;
 }
 

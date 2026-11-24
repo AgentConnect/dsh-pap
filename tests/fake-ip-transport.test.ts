@@ -158,9 +158,10 @@ test('unsafe or unrelated DNS-over-HTTPS answers never dial the merchant', async
 });
 
 test('a failed AAAA query still stops the merchant request after a public A answer', async t => {
-  for (const [description, aaaa, code] of [
-    ['DNS error', { body: { ...reply(28, []), Status: 2 } }, 'unsafe_destination'],
-    ['timeout', undefined, 'request_uncertain'],
+  for (const [description, aaaa] of [
+    ['DNS SERVFAIL', { body: { ...reply(28, []), Status: 2 } } ],
+    ['resolver unavailable', { body: {}, status: 503 }],
+    ['timeout', undefined],
   ] as const) {
     await t.test(description, async t => {
       const { calls } = mockNetwork(t, [fakeIp], url => {
@@ -168,9 +169,9 @@ test('a failed AAAA query still stops the merchant request after a public A answ
         if (url.searchParams.get('type') === '1') return { body: reply(1, [record(`${shop}.`, 1, shopIp.address)]) };
         return aaaa;
       });
-      await assert.rejects(new SafeHttpsTransport({ timeoutMs: 150 }).request(documentUrl), { code });
+      await assert.rejects(new SafeHttpsTransport({ timeoutMs: 150 }).request(documentUrl), { code: 'request_not_sent' });
       assert.deepEqual(calls.map(call => call.url.searchParams.get('type')), ['1', '28']);
-      if (code === 'request_uncertain') assert.equal(calls[1]?.options.signal?.aborted, true);
+      if (aaaa === undefined) assert.equal(calls[1]?.options.signal?.aborted, true);
     });
   }
 });

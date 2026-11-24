@@ -861,6 +861,24 @@ test('PAP business diagnostics do not report an attempted transport failure as d
   assert.equal(f.consent.executions,1);assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')).length,1);
 });
 
+test('PAP business diagnostics report a pre-dispatch resolver failure as unsent', async t => {
+  const f = await fixture(t, { autoConnect: true });
+  const write = await domainWrite(f);
+  f.transport.override = (url, options) => {
+    if (url.includes('/api/cart') && options?.method === 'POST')
+      throw new PapError('request_not_sent');
+  };
+  const pending = f.execute('pap_request', { operationRef: write.operationRef, body: {} });
+  await untilConsent(f);
+  f.consent.approve();
+  const result = await pending;
+  assert(!result.ok);
+  assert.equal(result.error.code, 'request_not_sent');
+  assert.equal(result.error.businessRequest, 'not_sent');
+  assert.equal(f.consent.executions, 1);
+  assert.equal(f.transport.calls.filter(call => call.url.includes('/api/cart')).length, 1);
+});
+
 test('PAP business diagnostics retain a received response when a later local consent check fails',async t=>{
   const f=await fixture(t,{autoConnect:true});const write=await domainWrite(f);
   f.transport.override=(url,options)=>{if(url.includes('/api/cart')&&options?.method==='POST'){f.consent.revoke();return jsonResponse(url,{created:true},200);}return undefined;};

@@ -94,6 +94,27 @@ test('F-T07 refresh lost response marks uncertain and prevents old refresh repla
   f.transport.override = url => { if(url.endsWith('/token')) throw new Error('fixture lost response'); };
   await assert.rejects(f.client.refreshAccountGrant(grant.grantRef),fails('request_uncertain')); assert.equal((await f.client.store.read()).grants[grant.grantRef]!.status,'uncertain'); await assert.rejects(f.client.refreshAccountGrant(grant.grantRef),fails('reauthorization_required'));
 });
+test('F-T07 a known unsent refresh leaves the grant active and can be retried after DNS recovers', async t => {
+  const f = await setup(t, 'account');
+  const grant = await signedIn(f);
+  f.transport.override = url => {
+    if (url.endsWith('/token')) throw new PapError('request_not_sent');
+  };
+  await assert.rejects(f.client.refreshAccountGrant(grant.grantRef), fails('request_not_sent'));
+  const afterFailure = (await f.client.store.read()).grants[grant.grantRef]!;
+  assert.equal(afterFailure.status, 'active');
+  assert.equal(afterFailure.refreshToken, 'refresh-fixture');
+
+  f.transport.override = (url, options) => {
+    if (!url.endsWith('/token')) return;
+    assert.equal(new URLSearchParams(options?.body).get('refresh_token'), 'refresh-fixture');
+    return jsonResponse(url, { access_token: 'fresh-access', refresh_token: 'rotated', token_type: 'DPoP' });
+  };
+  await f.client.refreshAccountGrant(grant.grantRef);
+  const afterRetry = (await f.client.store.read()).grants[grant.grantRef]!;
+  assert.equal(afterRetry.status, 'active');
+  assert.equal(afterRetry.refreshToken, 'rotated');
+});
 test('F-T08 session_ended retries once with new sid/proof; invalid_session and uncertain POST never retry', async t => {
   const f=await setup(t); let count=0;
   f.transport.override = url => url.includes('/api/cart') && count++ === 0 ? jsonResponse(url,{error:'session_ended'},409) : undefined;

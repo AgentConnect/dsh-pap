@@ -376,6 +376,7 @@ export class PapService extends Service {
         await assertPolicy();
         checkRequest(); this.credentialHistory.assertUsable();
         const sentSecrets = new Set(privateValues(snapshot));
+        let businessResponseReceived = false;
         try {
           const dispatch = (assertConsent?: () => Promise<void>) => {
             trace.phase='identity';
@@ -384,7 +385,10 @@ export class PapService extends Service {
               trace.phase=event==='attempted'?'request':'response';
               trace.businessRequest=event==='attempted'?'unknown':'response_received';
               if(event==='attempted')delete trace.httpStatus;
-              else if(status!==undefined)trace.httpStatus=status;
+              else {
+                businessResponseReceived = true;
+                if (status !== undefined) trace.httpStatus = status;
+              }
             },
             assertAllowed: state => { checkRequest(); this.credentialHistory.assertUsable(); assertOperation(state); },
             ...((admission||assertConsent)?{assertConsent:async()=>{await assertPolicy();await assertConsent?.();},singleOperation:needsConsent||!['GET','HEAD'].includes(route.method)||effect!=='read'}:{}),
@@ -403,6 +407,8 @@ export class PapService extends Service {
           if (pdf && response.status === 200) return orderPdf(response, route, parsed.data.path, secrets);
           return publicResponse(response, secrets, business ? 8*1024*1024 : 65536);
         } catch (error) {
+          if (error instanceof PapError && error.code === 'request_not_sent' && !businessResponseReceived)
+            trace.businessRequest = 'not_sent';
           if (this.client === engine && !this.changing && error instanceof PapError && error.authHint) {
             if (this.authHints.size >= 32) this.authHints.delete(this.authHints.keys().next().value!);
             this.authHints.set(parsed.data.operationRef, error.authHint);
