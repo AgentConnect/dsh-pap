@@ -1014,10 +1014,13 @@ test('PAP business: writes wait for the existing once-approval and send only onc
   const entry=[...f.loader.entries()].find(item=>item.options.name==='example/shop')!;
   const business=f.service.acquireBusiness(entry.fiber!.ctx);
   const write=await domainWrite(f);
-  const pending=business.request({operationRef:write.operationRef,body:{quantity:1}});
+  const progress:string[]=[];
+  const pending=business.request({operationRef:write.operationRef,body:{quantity:1}},undefined,phase=>progress.push(phase));
   await untilConsent(f);
+  assert.deepEqual(progress,['approval']);
   assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')&&call.options?.method==='POST').length,0);
   f.consent.approve();assert.equal(value(await pending).status,200);
+  assert.deepEqual(progress,['approval','request','response']);
   assert.equal(f.consent.executions,1);
   assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')&&call.options?.method==='POST').length,1);
 });

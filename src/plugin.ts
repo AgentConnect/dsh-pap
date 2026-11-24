@@ -295,8 +295,8 @@ export class PapService extends Service {
     return this.publicValue(state,{ state: 'ready', identity: this.selected, supportedSignIn: ['direct'],
       ...(includeManagementHints ? { authenticationHints: [...this.authHints].map(([operationRef, hint]) => ({ operationRef, ...hint })),
         pendingSignIns: Object.values(state.transactions).filter(value => value.status === 'pending' && value.expiresAt > Date.now()).map(value => ({ transactionRef:value.ref, accountSlot:value.accountSlot, ...(state.subjects[value.subjectRef]?{companyRef:state.subjects[value.subjectRef]!.companyRef}:{}), expiresAt:value.expiresAt })) } : {}),
-      companies: Object.values(state.companies).map(value => ({ companyRef: value.ref, ...(businessMetadata?{domain:value.domain,companyId:value.companyId,...(value.ucp?{ucpCapabilities:value.ucp.capabilities, ucpFulfillmentParents:value.ucp.fulfillmentParents}:{})}:{}), name: value.name, authMode: value.authMode, scopes: value.scopes })),
-      sessions: Object.values(state.sessions).map(value => ({ sessionRef: value.ref, ...(state.subjects[value.subjectRef] ? { companyRef: state.subjects[value.subjectRef]!.companyRef } : {}), connected: value.connected, account: Boolean(value.accountSlot), ...(value.accountSlot ? { accountSlot: value.accountSlot } : {}) })),
+      companies: Object.values(state.companies).map(value => ({ companyRef: value.ref, ...(businessMetadata?{domain:value.domain,companyId:value.companyId,discoveryExpiresAt:value.expiresAt,discoveryGeneration:value.generation,...(value.ucp?{ucpCapabilities:value.ucp.capabilities, ucpFulfillmentParents:value.ucp.fulfillmentParents}:{})}:{}), name: value.name, authMode: value.authMode, scopes: value.scopes })),
+      sessions: Object.values(state.sessions).map(value => ({ sessionRef: value.ref, ...(state.subjects[value.subjectRef] ? { companyRef: state.subjects[value.subjectRef]!.companyRef } : {}), ...(businessMetadata?{generation:value.generation}:{}), connected: value.connected, account: Boolean(value.accountSlot), ...(value.accountSlot ? { accountSlot: value.accountSlot } : {}) })),
       accounts: Object.values(state.grants).map(value => ({ accountSlot: value.accountSlot, ...(state.subjects[value.subjectRef] ? { companyRef:state.subjects[value.subjectRef]!.companyRef } : {}), status: value.status, scopes: value.scope,canRefresh:value.status==='active'&&Boolean(value.refreshToken) })),
     }) as object;
   }
@@ -347,7 +347,7 @@ export class PapService extends Service {
       }),
       status: () => this.runPublic(async () => { check(); const result = await this.getStatus(false,business); check(); return result; }),
       operations: () => this.runPublic(() => this.catalog(!this.config.autoConnect, check)),
-      request: async (input, signal) => {
+      request: async (input, signal, onProgress) => {
         const trace: PapRequestTrace = {phase:'prepare',businessRequest:'not_sent'};
         const result = await this.runPublic(async () => {
         check(); const parsed = operationRequestSchema.safeParse(input); requirePap(parsed.success, 'permission_denied');
@@ -366,6 +366,11 @@ export class PapService extends Service {
         const needsConsent=admission?.decision==='ask';
         const session = snapshot.sessions[prepared.approval.sessionRef];
         const operations = isOperationsRoute(company, route) && session?.extensions?.operations === '3';
+        const report=(phase:'approval'|'request'|'response')=>{
+          if(business && !['GET','HEAD'].includes(route.method)) {
+            try { onProgress?.(phase); } catch { /* A display observer cannot change dispatch. */ }
+          }
+        };
         const operationsKey = operations ? sha256(JSON.stringify([
           company.metadataDigest, prepared.approval.sessionRef, session?.generation, admission?.version,
           parsed.data.operationRef, prepared.operation.url, prepared.operation.body,
@@ -397,6 +402,7 @@ export class PapService extends Service {
             return engine.dispatchPap(prepared.approval.sessionRef, prepared.operation, { signal, operationRef: parsed.data.operationRef, orderPdf: pdf,
             observeBusiness: (event,status) => {
               trace.phase=event==='attempted'?'request':'response';
+              report(trace.phase);
               trace.businessRequest=event==='attempted'?'unknown':'response_received';
               if(event==='attempted')delete trace.httpStatus;
               else {
@@ -420,7 +426,7 @@ export class PapService extends Service {
           let response;
           if (!challenge) {
             if (needsConsent) trace.phase='approval';
-            response = needsConsent ? await this.withDomainConsent(prepared.operation, signal, checkRequest, dispatch,admission!.version) : await dispatch();
+            response = needsConsent ? await this.withDomainConsent(prepared.operation, signal, checkRequest, dispatch,admission!.version,undefined,()=>report('approval')) : await dispatch();
             challenge = operations ? operationChallenge(response, prepared.operation) : undefined;
           }
           if (challenge && operationsKey) {
@@ -439,7 +445,7 @@ export class PapService extends Service {
                 if (trace.businessRequest !== 'not_sent') pending.dispatched = true;
               });
               return reply;
-            }, admission?.version, challenge.purpose);
+            }, admission?.version, challenge.purpose,()=>report('approval'));
             const replacement = operationChallenge(response, prepared.operation);
             if (replacement) {
               requirePap(replacement.id === challenge.id && replacement.revision !== challenge.revision, 'unsupported_profile');
@@ -500,7 +506,7 @@ export class PapService extends Service {
       requirePap(session?.connected && session.generation === generation && state.subjects[session.subjectRef]?.companyRef === company.ref, 'disconnected');
     };
   }
-  private async withDomainConsent<T>(operation: Operation, inputSignal: AbortSignal | undefined, check: () => void, effect: (assertActive: () => Promise<void>) => Promise<T>,policyVersion?:number,purpose?:string): Promise<T> {
+  private async withDomainConsent<T>(operation: Operation, inputSignal: AbortSignal | undefined, check: () => void, effect: (assertActive: () => Promise<void>) => Promise<T>,policyVersion?:number,purpose?:string,onPending?:()=>void): Promise<T> {
     const identity = this.installedContext.get('anpIdentity') as {
       bindDomainOperationConsumer(context: Context): DomainOperationConsumer;
       resolveDomainAccess(context: Context, profile: 'pap_session'): Promise<{identityRef:IdentityRef;policyRef:string}>;
@@ -521,6 +527,7 @@ export class PapService extends Service {
       purpose:purpose ?? `PAP exact operation ${request.method} ${new URL(request.url).origin}; policy ${policyVersion}`,request:request.clone()});
     if (decision.status === 'pending') {
       this.pendingConsents.set(key, decision);
+      onPending?.();
       try { decision = await waitForConsent(consumer,decision,signal,this.approvalWaitMs,this.approvalPollMs); }
       catch (error) {
         this.pendingConsents.delete(key);

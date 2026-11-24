@@ -55,5 +55,5 @@ export interface PapOperationsClient {
   connect(domain: string): Promise<ProductResult>;
   status(): Promise<ProductResult>;
   operations(): Promise<ProductResult>;
-  request(input: unknown, signal?: AbortSignal): Promise<ProductResult>;
+  request(input: unknown, signal?: AbortSignal, onProgress?: (phase:'approval'|'request'|'response') => void): Promise<ProductResult>;
 }
