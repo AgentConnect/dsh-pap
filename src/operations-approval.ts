@@ -5,6 +5,7 @@ import type { Company, HttpResponse, Operation, Route } from './types.js';
 export const POPPY_APPROVAL = 'poppy-approval';
 const identifier = /^[A-Za-z0-9_.-]{1,200}$/;
 const minor = /^(0|[1-9]\d{0,15})$/;
+const casesPath = '/poppy/v1/aftersales/orders/{order_id}/cases';
 type Fields = Record<string, unknown>;
 
 export type OperationChallenge = { id: string; revision: string; expiresAt: number; purpose: string; details: { revision: string; rows: {label:string; value:string}[] } };
@@ -13,9 +14,10 @@ const object = (value: unknown): value is Fields => Boolean(value && typeof valu
 const clean = (value: string) => value.replace(/[\p{Cc}\p{Cf}]/gu, ' ').trim();
 
 export function isOperationsRoute(company: Company, route: Route): boolean {
-  return company.extensions?.operations === '3' && route.channel === 'openapi' && route.method === 'POST' &&
-    (route.operationId === 'aftersales.submit' || route.operationId === 'aftersales.withdraw') &&
-    new URL(route.template).origin === company.discoveryOrigin;
+  if (company.extensions?.operations !== '3' || route.channel !== 'openapi' || route.method !== 'POST') return false;
+  const cases = company.discoveryOrigin + casesPath;
+  return (route.operationId === 'aftersales.submit' && route.template === cases) ||
+    (route.operationId === 'aftersales.withdraw' && route.template === cases + '/{case_id}/withdraw');
 }
 
 function selections(value: unknown): { line_id: string; quantity: number; title?: string }[] | undefined {

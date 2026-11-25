@@ -363,9 +363,11 @@ export class PapService extends Service {
         const admission=domain?await this.policyAdmission(snapshot,parsed.data.operationRef,prepared.operation.url):undefined;
         const effect=domain?classifyRoute(this.protocolPolicy().policy,route).effect:undefined;
         requirePap(admission?.decision!=='deny','protocol_permission_denied');
-        const needsConsent=admission?.decision==='ask';
         const session = snapshot.sessions[prepared.approval.sessionRef];
         const operations = isOperationsRoute(company, route) && session?.extensions?.operations === '3';
+        // Operations v3 prepares the terms under the active policy and asks
+        // the owner once the original store returns the full challenge.
+        const needsConsent=admission?.decision==='ask' && !operations;
         if (operations) {
           const host = this.installedContext.get('anpIdentity') as { bindDomainOperationConsumer?(ctx:Context):DomainOperationConsumer };
           this.operationConsumer ??= host.bindDomainOperationConsumer?.(this.installedContext);
@@ -403,9 +405,9 @@ export class PapService extends Service {
         }
         let businessResponseReceived = false;
         try {
-          const dispatch = (assertConsent?: () => Promise<void>, operationsApproval?: OperationChallenge) => {
+          const dispatch = (operation: Operation, assertConsent?: () => Promise<void>, operationsApproval?: OperationChallenge) => {
             trace.phase='identity';
-            return engine.dispatchPap(prepared.approval.sessionRef, prepared.operation, { signal, operationRef: parsed.data.operationRef, orderPdf: pdf,
+            return engine.dispatchPap(prepared.approval.sessionRef, operation, { signal, operationRef: parsed.data.operationRef, orderPdf: pdf,
             observeBusiness: (event,status) => {
               trace.phase=event==='attempted'?'request':'response';
               report(trace.phase);
@@ -463,7 +465,10 @@ export class PapService extends Service {
           let response;
           if (!challenge) {
             if (needsConsent) trace.phase='approval';
-            response = needsConsent ? await this.withDomainConsent(prepared.operation, signal, checkRequest, dispatch,admission!.version,undefined,()=>report('approval')) : await dispatch();
+            response = needsConsent
+              ? await this.withDomainConsent(prepared.operation, signal, checkRequest, active => dispatch(prepared.operation, active),
+                admission!.version, undefined, () => report('approval'))
+              : await dispatch(prepared.operation);
             challenge = operations ? operationChallenge(response, prepared.operation) : undefined;
             if (recoveredId && challenge) requirePap(challenge.id === recoveredId, "request_uncertain");
           }
@@ -474,12 +479,15 @@ export class PapService extends Service {
             }
             const pending = { challenge, dispatched: false };
             this.operationsChallenges.set(operationsKey, pending);
-            const exact = { ...prepared.operation, headers: { ...prepared.operation.headers, [POPPY_APPROVAL]: approvalHeader(challenge) } };
+            // Only the draft carries the caller's idempotency key. The
+            // approval header identifies the prepared operation and revision.
+            const confirmation = { ...prepared.operation, idempotencyKey: undefined };
+            const exact = { ...confirmation, headers: { ...confirmation.headers, [POPPY_APPROVAL]: approvalHeader(challenge) } };
             sentSecrets.add(exact.headers[POPPY_APPROVAL]);
             trace.phase = 'approval'; trace.businessRequest = 'not_sent'; delete trace.httpStatus;
             const approved = challenge;
             response = await this.withDomainConsent(exact, signal, checkRequest, async active => {
-              const reply = await dispatch(active, approved).finally(() => {
+              const reply = await dispatch(confirmation, active, approved).finally(() => {
                 if (trace.businessRequest !== 'not_sent') pending.dispatched = true;
               });
               return reply;

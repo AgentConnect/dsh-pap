@@ -39,6 +39,7 @@ test('Core cancellation terms survive PAP review and exactly one Identity admiss
       {...request,approval:approvalHeader(approval)});
     const admitted=await engine.requestAccess(caller,{requestId:randomUUID(),identity,operation,approvalProfile:'exact-operation/1',
       purpose:approval.purpose,details:approval.details});
+    assert.match(admitted.purpose,/¥9\.00 CNY，含运费 ¥1\.00 CNY/);
     assert.equal(admitted.details.revision,revision);
     for(const line of items) assert(admitted.details.rows.some(row=>row.label===line.title && row.value===line.id+' × '+line.quantity));
     reviews.push({admitted,operation});
