@@ -363,11 +363,9 @@ export class PapService extends Service {
         const admission=domain?await this.policyAdmission(snapshot,parsed.data.operationRef,prepared.operation.url):undefined;
         const effect=domain?classifyRoute(this.protocolPolicy().policy,route).effect:undefined;
         requirePap(admission?.decision!=='deny','protocol_permission_denied');
+        const needsConsent=admission?.decision==='ask';
         const session = snapshot.sessions[prepared.approval.sessionRef];
         const operations = isOperationsRoute(company, route) && session?.extensions?.operations === '3';
-        // Operations v3 prepares the terms under the active policy and asks
-        // the owner once the original store returns the full challenge.
-        const needsConsent=admission?.decision==='ask' && !operations;
         if (operations) {
           const host = this.installedContext.get('anpIdentity') as { bindDomainOperationConsumer?(ctx:Context):DomainOperationConsumer };
           this.operationConsumer ??= host.bindDomainOperationConsumer?.(this.installedContext);

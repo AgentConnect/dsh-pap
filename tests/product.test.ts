@@ -1030,7 +1030,7 @@ test('PAP business: writes wait for the existing once-approval and send only onc
   assert.equal(f.transport.calls.filter(call=>call.url.includes('/api/cart')&&call.options?.method==='POST').length,1);
 });
 
-async function aftersalesFixture(t:test.TestContext, {mismatch=false, loseReply=false, withdraw=false, allowWrites=false, operations=true, advertisedElsewhere=false} = {}) {
+async function aftersalesFixture(t:test.TestContext, {mismatch=false, loseReply=false, withdraw=false, allowWrites=true, operations=true, advertisedElsewhere=false} = {}) {
   const f=await fixture(t,{autoConnect:true,businessConsumers:['example/shop']});
   if (allowWrites) f.policy.set('write','allow');
   const order='b50aa930-90c6-494a-ab06-c6a22db36592';
@@ -1135,13 +1135,13 @@ test('PAP Operations keeps an uncertain approval bound to its original reference
 });
 
 test('PAP Operations refuses an approval challenge for a different order before requesting consent',async t=>{
-  const {f,client,request,sends}=await aftersalesFixture(t,{mismatch:true,allowWrites:true});
+  const {f,client,request,sends}=await aftersalesFixture(t,{mismatch:true});
   error(await client.request(request),'unsupported_profile');
   assert.equal(f.consent.requests,0);
   assert.equal(sends().length,1);
 });
 
-test('PAP Operations withdraw prepares under ask and sends only one owner-approved withdrawal', async t=>{
+test('PAP Operations withdraw sends only one owner-approved withdrawal under allow', async t=>{
   const {f,client,request,sends}=await aftersalesFixture(t,{withdraw:true});
   const pending=client.request(request);
   await untilConsent(f);
@@ -1176,11 +1176,11 @@ test('PAP Operations denial leaves no approved submission or withdrawal', async 
 });
 
 test('PAP Operations still checks host access and negotiated extensions before preparation', async t=>{
-  for (const scenario of ['disabled','denied','not negotiated','wrong path']) await t.test(scenario,async t=>{
+  for (const scenario of ['disabled','denied','not negotiated','wrong path','negotiated under ask']) await t.test(scenario,async t=>{
     const {f,client,request,sends}=await aftersalesFixture(t,{
-      operations:scenario!=='not negotiated',advertisedElsewhere:scenario==='wrong path',
+      allowWrites:false,operations:scenario!=='not negotiated',advertisedElsewhere:scenario==='wrong path',
     });
-    const genericConsent=scenario==='not negotiated'||scenario==='wrong path';
+    const genericConsent=scenario!=='disabled'&&scenario!=='denied';
     if (scenario==='disabled') f.disableDomain();
     if (scenario==='denied') f.policy.set('write','deny');
     const pending=client.request(request);
@@ -1194,6 +1194,26 @@ test('PAP Operations still checks host access and negotiated extensions before p
     assert.equal(sends().length,0);
     assert.equal(f.consent.requests,genericConsent?1:0);
   });
+});
+
+test('PAP Operations under ask approves preparation before asking for the exact terms', async t=>{
+  const {f,client,request,sends}=await aftersalesFixture(t,{allowWrites:false});
+  const pending=client.request(request);
+  await untilConsent(f);
+  assert.equal(sends().length,0);
+  assert.equal(f.consent.request?.headers.has('poppy-approval'),false);
+  f.consent.approve();
+
+  await untilConsent(f,2);
+  assert.equal(sends().length,1);
+  assert.equal(sends()[0]!.options?.headers?.['poppy-approval'],undefined);
+  assert.equal(f.consent.details?.revision,'revision-1');
+  assert.equal(f.consent.request?.headers.has('poppy-approval'),true);
+  f.consent.approve();
+
+  assert.equal(value(await pending).body.status,'performed');
+  assert.equal(sends().length,2);
+  assert.match(sends()[1]!.options?.headers?.['poppy-approval'] ?? '',/revision="revision-1"/);
 });
 
 test('PAP Operations fences revoked access after preparation', async t=>{
