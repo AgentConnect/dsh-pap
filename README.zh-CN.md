@@ -299,6 +299,8 @@ Identity 0.1.15 提供 `protocol_permissions`、`identity_settings`，让 Agent 
 Host 可以在 PAP 插件配置中显式设置 `businessConsumers: ['dsh-frontvia-customer']`。
 获准的真实已安装插件使用 `ctx.pap.acquireBusiness(ctx)`，取得 `connect(domain)`、
 `status()`、`operations()` 和 `request({operationRef, path?, query?, body?})`。
+业务调用还支持 `request(input, signal, onProgress)`。写操作在宿主已有待确认请求、请求实际发出、收到响应时分别报告 `approval`、`request`、`response`。阶段只用于显示，最终结果和原操作回执决定业务状态。业务状态中的 `discoveryGeneration`、`discoveryExpiresAt` 与会话代次供已连接店铺判断发现缓存是否有效。
+
 这些调用复用工具路径的发现、默认身份、撤权检查、统一权限和一次操作批准；
 不能读取 Token、签名句柄，不能提交任意 URL。未批准或已卸载的插件无法继续调用。
 

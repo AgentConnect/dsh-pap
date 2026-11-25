@@ -44,6 +44,8 @@ export interface PapRequestTrace {
   phase: 'prepare' | 'approval' | 'identity' | 'request' | 'response';
   businessRequest: 'not_sent' | 'unknown' | 'response_received';
   httpStatus?: number;
+  /** Company operation reference for querying an after-sales request after an interrupted submission. */
+  papOperationId?: string;
 }
 export type ProductResult = { ok: true; value: unknown } | { ok: false; error: Partial<PapRequestTrace> & { code: string; retryAfterSeconds?: number | string; approval?: { requestId: string; presentation: 'dialog'; status: 'pending' } } };
 
@@ -53,5 +55,5 @@ export interface PapOperationsClient {
   connect(domain: string): Promise<ProductResult>;
   status(): Promise<ProductResult>;
   operations(): Promise<ProductResult>;
-  request(input: unknown, signal?: AbortSignal): Promise<ProductResult>;
+  request(input: unknown, signal?: AbortSignal, onProgress?: (phase:'approval'|'request'|'response') => void): Promise<ProductResult>;
 }

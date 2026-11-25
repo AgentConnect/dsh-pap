@@ -35,9 +35,10 @@ export class PapDiscovery {
     // The Company may advertise a newer compatible minor; this client sends 1.0.
     const protocolVersion = '1.0' as const;
     const extensions: Record<string,string> = {};
-    if (doc.extensions !== undefined && this.platformProfileUrl) {
-      const ucp = object(doc.extensions).ucp;
-      if (Array.isArray(ucp) && ucp.some(entry => object(entry).version === '1')) extensions.ucp = '1';
+    if (doc.extensions !== undefined) {
+      const { ucp, operations } = object(doc.extensions);
+      if (this.platformProfileUrl && Array.isArray(ucp) && ucp.some(entry => object(entry).version === '1')) extensions.ucp = '1';
+      if (Array.isArray(operations) && operations.some(entry => object(entry).version === '3')) extensions.operations = '3';
     }
     const organization = object(doc.organization);
     requirePap(typeof organization.domain === 'string' && organization.domain.toLowerCase() === url.host.toLowerCase() && typeof organization.name === 'string' && organization.name.length > 0, 'discovery_failed');

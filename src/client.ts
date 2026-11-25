@@ -12,6 +12,7 @@ import type { PapHostOptions, PapSigningLease } from './host.js';
 import { PapStore } from './store.js';
 import { DelegationAttemptFailure, newDelegation, thumbprint, verifyCompact } from './delegation.js';
 import { isOrderPdfRoute, operationRef } from './product-operations.js';
+import { POPPY_APPROVAL, approvalHeader, isOperationsRoute, type OperationChallenge } from './operations-approval.js';
 import { SafeHttpsTransport } from './network.js';
 import type { AuthTransaction, Company, Delegation, Grant, HttpResponse, HttpTransport, KeyRef, Operation, PapState, Session, Subject } from './types.js';
 import { httpsUrl, htu, id, isPapLoopbackRedirect, jwtParts, matchedRoute, parseJson, scopeFor, sha256 } from './util.js';
@@ -19,7 +20,7 @@ import { httpsUrl, htu, id, isPapLoopbackRedirect, jwtParts, matchedRoute, parse
 function secureEqual(a: unknown, b: string): boolean {
   return typeof a === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
-const protectedHeaders = new Set(['authorization','dpop','poppy-session','poppy-version','poppy-extensions','ucp-agent','signature','signature-input','content-digest','request-id','host','cookie','proxy-authorization','content-length','connection','transfer-encoding']);
+const protectedHeaders = new Set(['authorization','dpop','poppy-session','poppy-version','poppy-extensions',POPPY_APPROVAL,'ucp-agent','signature','signature-input','content-digest','request-id','host','cookie','proxy-authorization','content-length','connection','transfer-encoding']);
 interface WaitContext { pendingTransaction?: boolean; subjectRef: string; sessionRef?: string; accountSlot?: string; accountEpoch?: number; allowSignedOut?: boolean; grantRef?: string; grantGeneration?: number; transactionRef?: string }
 interface AccountRequestControl { purpose?: 'token'|'revoke'|'par'; scopes: readonly string[]; accountEpoch?: number; sessionRef?: string; grantRef?: string; grantGeneration?: number; transactionRef?: string }
 /** Same-process permission fence, never a wire input. */
@@ -30,6 +31,8 @@ export interface PapDispatchControl {
   assertAllowed?: (state: PapState) => void;
   /** Revalidate the consumed exact-operation permit immediately before physical dispatch. */
   assertConsent?: () => Promise<void>;
+  /** Constructed from a checked server challenge inside the Host approval path. */
+  operationsApproval?: OperationChallenge;
   /** A single owner decision never authorizes an automatic second business send. */
   singleOperation?: boolean;
   /** Business dispatch observations only; an attempted transport call is not proof of delivery. */
@@ -247,6 +250,11 @@ export class PapClient {
       const route = company.routes.find(x => x.method === method && matchedRoute(x.template, url)
         && (reference === undefined || operationRef(company, x) === reference)); requirePap(route, 'unsafe_destination');
       requirePap(!frozen.resource || frozen.resource === route.resource, 'unsafe_destination');
+      if (control.operationsApproval) {
+        requirePap(isOperationsRoute(company, route) && session.extensions?.operations === '3' &&
+          control.assertConsent && control.singleOperation, 'permission_denied');
+        requirePap(control.operationsApproval.expiresAt > this.clock(), 'identity_authorization_expired');
+      }
       if (route.channel === 'ucp' && (route.operationId === 'get_store_context' || route.operationId === 'list_orders')) {
         const keys = [...new URL(url).searchParams.keys()];
         requirePap(keys.length <= (route.parameters?.length ?? 0) &&
@@ -285,6 +293,7 @@ export class PapClient {
       const sessionJwt = await lease.signPapSessionRequest({ key: delegation.key, scope: scopeFor(subject), delegation: delegation.compact, clientId: subject.binding.clientId, sid: session.sid, sub: subject.userId, agentId: subject.agentId, httpMethod: method, httpUri: url, accessToken: grant?.accessToken });
       this.checkSessionJwt(sessionJwt, delegation, subject, session, method, url, grant?.accessToken);
       const sentHeaders: Record<string, string> = { ...headers, 'poppy-session': sessionJwt, 'poppy-version': session.protocolVersion };
+      if (control.operationsApproval) sentHeaders[POPPY_APPROVAL] = approvalHeader(control.operationsApproval);
       const extensions = Object.entries(session.extensions ?? {}).sort(([a],[b]) => a.localeCompare(b));
       if (extensions.length) sentHeaders['poppy-extensions'] = extensions.map(([name,version]) => `${JSON.stringify(name)};v=${JSON.stringify(version)}`).join(', ');
       if (route.channel === 'ucp') {
@@ -322,6 +331,7 @@ export class PapClient {
         response = await this.store.transaction(async current => {
           try { await lease.assertActive(); await dpopLease?.assertActive(); } catch { throw new PapError('permission_denied'); }
           await control.assertConsent?.();
+          if (control.operationsApproval) requirePap(control.operationsApproval.expiresAt > this.clock(), 'identity_authorization_expired');
           allowed(current); requirePap(!controller.signal.aborted, 'disconnected');
           const currentSession = this.session(current, sessionRef);
           requirePap(this.company(current, subject.companyRef).generation === company.generation && currentSession.generation === session.generation && current.delegations[subject.ref]?.generation === delegation.generation, 'state_conflict');
